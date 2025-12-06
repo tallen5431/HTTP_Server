@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HTTP Server Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="header-content">
+        <h1>HTTP Server Manager</h1>
+        <div class="connection-status">
+          <span class="status-indicator" id="wsStatus"></span>
+          <span id="wsStatusText">Connecting...</span>
+        </div>
+      </div>
+      <div class="bulk-actions" id="bulkActions">
+        <button class="btn btn-success btn-sm" id="btnStartAll" title="Start all stopped programs">
+          <span>▶</span> Start All
+        </button>
+        <button class="btn btn-danger btn-sm" id="btnStopAll" title="Stop all running programs">
+          <span>■</span> Stop All
+        </button>
+        <button class="btn btn-primary btn-sm" id="btnRestartAll" title="Restart all running programs">
+          <span>↻</span> Restart All
+        </button>
+        <button class="btn btn-info btn-sm" id="btnRediscover" title="Rediscover projects and regenerate config">
+          <span>🔍</span> Rediscover
+        </button>
+        <button class="btn btn-warning btn-sm" id="btnRestartManager" title="Restart the HTTP Server Manager process">
+          <span>⟳</span> Restart Manager
+        </button>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <div class="stats-bar">
+        <div class="stat-item">
+          <span class="stat-label">Total:</span>
+          <span class="stat-value" id="statTotal">0</span>
+        </div>
+        <div class="stat-item stat-success">
+          <span class="stat-label">Running:</span>
+          <span class="stat-value" id="statRunning">0</span>
+        </div>
+        <div class="stat-item stat-danger">
+          <span class="stat-label">Stopped:</span>
+          <span class="stat-value" id="statStopped">0</span>
+        </div>
+      </div>
+      <div class="search-bar">
+        <input type="text" id="searchInput" placeholder="Search programs... (Ctrl+F)" class="search-input">
+        <button class="btn-clear-search hidden" id="btnClearSearch" title="Clear search">✕</button>
+      </div>
+    </div>
+
+    <main>
+      <div class="programs-grid" id="programsGrid">
+        <!-- Programs will be loaded here -->
+      </div>
+
+      <div class="empty-state" id="emptyState">
+        <h2>No Programs Configured</h2>
+        <p>Edit config.json to add programs to manage.</p>
+      </div>
+
+      <div class="no-results hidden" id="noResults">
+        <h2>No Programs Found</h2>
+        <p>No programs match your search criteria.</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- Program Card Template -->
+  <template id="programCardTemplate">
+    <div class="program-card">
+      <div class="program-header">
+        <h3 class="program-name"></h3>
+        <span class="program-status badge"></span>
+      </div>
+      <div class="program-info">
+        <div class="info-row">
+          <span class="label">Path:</span>
+          <span class="value program-path"></span>
+        </div>
+        <div class="info-row program-url-row">
+          <span class="label">URL:</span>
+          <a href="#" class="value program-url" target="_blank" rel="noopener noreferrer"></a>
+        </div>
+        <div class="info-row">
+          <span class="label">PID:</span>
+          <span class="value program-pid"></span>
+        </div>
+        <div class="info-row program-uptime-row hidden">
+          <span class="label">Uptime:</span>
+          <span class="value program-uptime"></span>
+        </div>
+      </div>
+      <div class="program-actions">
+        <button class="btn btn-success btn-start" title="Start">
+          <span class="btn-spinner hidden">⟳</span>
+          <span class="btn-text"><span>▶</span> Start</span>
+        </button>
+        <button class="btn btn-danger btn-stop" title="Stop">
+          <span class="btn-spinner hidden">⟳</span>
+          <span class="btn-text"><span>■</span> Stop</span>
+        </button>
+        <button class="btn btn-primary btn-restart" title="Restart">
+          <span class="btn-spinner hidden">⟳</span>
+          <span class="btn-text"><span>↻</span> Restart</span>
+        </button>
+        <button class="btn btn-info btn-open hidden" title="Open Program">
+          <span>🔗</span> Open
+        </button>
+        <button class="btn btn-secondary btn-logs" title="View Logs">
+          <span>📄</span> Logs
+        </button>
+      </div>
+      <div class="program-logs hidden">
+        <div class="logs-header">
+          <h4>Logs</h4>
+          <div class="logs-controls">
+            <input type="text" class="log-search" placeholder="Search logs...">
+            <button class="btn-refresh-logs" title="Refresh logs">↻</button>
+            <button class="btn-close-logs" title="Close">✕</button>
+          </div>
+        </div>
+        <div class="logs-content"></div>
+      </div>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>

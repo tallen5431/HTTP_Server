@@ -1,0 +1,44 @@
+{
+  "hostname": "auto",
+  "programs": [
+    {
+      "id": "example-app-1",
+      "name": "Example Application 1",
+      "path": "/path/to/your/app",
+      "env": {
+        "NODE_ENV": "production",
+        "PORT": "8080"
+      },
+      "comment": "Example Node.js application. URL auto-generated as http://<detected-ip>:8080"
+    },
+    {
+      "id": "example-app-2",
+      "name": "Example Application 2",
+      "path": "/path/to/your/app2",
+      "env": {
+        "HOST": "0.0.0.0",
+        "PORT": "8081"
+      },
+      "comment": "Example Flask/Python application"
+    },
+    {
+      "id": "example-app-3",
+      "name": "Example Application 3",
+      "path": "/path/to/your/app3",
+      "url": "http://myapp.example.com",
+      "env": {
+        "PORT": "8002"
+      },
+      "comment": "Manual URL override. Useful for external domains or custom configurations."
+    },
+    {
+      "id": "example-app-4",
+      "name": "Example Application 4 (No URL)",
+      "path": "/path/to/your/app4",
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "comment": "No PORT env var and no URL, so no clickable link will appear"
+    }
+  ]
+}

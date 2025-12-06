@@ -1,0 +1,22 @@
+{
+  "name": "http-server-manager",
+  "version": "1.0.0",
+  "description": "HTTP server manager for managing and serving multiple programs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "http",
+    "server",
+    "manager",
+    "process-manager"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.14.2"
+  }
+}

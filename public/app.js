@@ -1,0 +1,703 @@
+// WebSocket connection
+let ws = null;
+let reconnectTimeout = null;
+let currentPrograms = [];
+let searchQuery = '';
+
+// Resolve a program URL against the current browser origin.
+//
+// Supports:
+//   - Absolute URLs: "http://example.com/app" (returned as-is)
+//   - Root-relative paths: "/myapp" (origin + path)
+//   - Simple paths: "myapp" (origin + "/" + path)
+function resolveProgramUrl(rawUrl) {
+  if (!rawUrl) return null;
+  const trimmed = String(rawUrl).trim();
+  if (!trimmed) return null;
+
+  const loc = window.location || {};
+  const currentHostname = loc.hostname || 'localhost';
+
+  // If this already looks like an absolute http(s) URL, check if we need to rewrite localhost
+  if (/^https?:\/\//i.test(trimmed)) {
+    // Replace localhost or 127.0.0.1 with the actual hostname used to access this page
+    // This ensures URLs work from remote clients accessing the manager
+    return trimmed
+      .replace(/localhost/g, currentHostname)
+      .replace(/127\.0\.0\.1/g, currentHostname);
+  }
+
+  const protocol = loc.protocol || 'http:';
+  const currentPort = loc.port || '';
+
+  const portSegment = currentPort ? `:${currentPort}` : '';
+  const origin = `${protocol}//${currentHostname}${portSegment}`;
+
+  // "/myapp" -> origin + path
+  if (trimmed.startsWith('/')) {
+    return origin + trimmed;
+  }
+
+  // "myapp" -> origin + path
+  const base = origin.replace(/\/+$/, '');
+  const path = trimmed.replace(/^\/+/, '');
+  return `${base}/${path}`;
+}
+
+// DOM elements
+const programsGrid = document.getElementById('programsGrid');
+const emptyState = document.getElementById('emptyState');
+const noResults = document.getElementById('noResults');
+const wsStatus = document.getElementById('wsStatus');
+const wsStatusText = document.getElementById('wsStatusText');
+const toastContainer = document.getElementById('toastContainer');
+const searchInput = document.getElementById('searchInput');
+const btnClearSearch = document.getElementById('btnClearSearch');
+const statTotal = document.getElementById('statTotal');
+const statRunning = document.getElementById('statRunning');
+const statStopped = document.getElementById('statStopped');
+
+// Toast Notification System
+function showToast(message, type = 'info', duration = 4000) {
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+
+  const icons = {
+    success: '✓',
+    error: '✗',
+    warning: '⚠',
+    info: 'ℹ'
+  };
+
+  toast.innerHTML = `
+    <div class="toast-icon">${icons[type] || icons.info}</div>
+    <div class="toast-content">
+      <div class="toast-message">${message}</div>
+    </div>
+    <button class="toast-close">✕</button>
+  `;
+
+  const closeBtn = toast.querySelector('.toast-close');
+  closeBtn.addEventListener('click', () => {
+    toast.remove();
+  });
+
+  toastContainer.appendChild(toast);
+
+  if (duration > 0) {
+    setTimeout(() => {
+      toast.style.animation = 'slideIn 0.3s ease-out reverse';
+      setTimeout(() => toast.remove(), 300);
+    }, duration);
+  }
+}
+
+// Format uptime
+function formatUptime(milliseconds) {
+  if (!milliseconds) return 'N/A';
+
+  const seconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) {
+    return `${days}d ${hours % 24}h ${minutes % 60}m`;
+  } else if (hours > 0) {
+    return `${hours}h ${minutes % 60}m`;
+  } else if (minutes > 0) {
+    return `${minutes}m ${seconds % 60}s`;
+  } else {
+    return `${seconds}s`;
+  }
+}
+
+// Connect to WebSocket
+function connectWebSocket() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}`;
+
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    console.log('WebSocket connected');
+    wsStatus.classList.add('connected');
+    wsStatus.classList.remove('disconnected');
+    wsStatusText.textContent = 'Connected';
+
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+      reconnectTimeout = null;
+    }
+  };
+
+  ws.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+
+    if (message.type === 'status') {
+      updateProgramsDisplay(message.data);
+    }
+  };
+
+  ws.onerror = (error) => {
+    console.error('WebSocket error:', error);
+  };
+
+  ws.onclose = () => {
+    console.log('WebSocket disconnected');
+    wsStatus.classList.remove('connected');
+    wsStatus.classList.add('disconnected');
+    wsStatusText.textContent = 'Disconnected';
+
+    // Attempt to reconnect after 3 seconds
+    reconnectTimeout = setTimeout(connectWebSocket, 3000);
+  };
+}
+
+// Fetch programs from API
+async function fetchPrograms() {
+  try {
+    const response = await fetch('/api/programs');
+    const programs = await response.json();
+    updateProgramsDisplay(programs);
+  } catch (error) {
+    console.error('Error fetching programs:', error);
+    showToast('Failed to fetch programs', 'error');
+  }
+}
+
+// Update programs display
+function updateProgramsDisplay(programs) {
+  currentPrograms = programs;
+
+  if (!programs || programs.length === 0) {
+    programsGrid.classList.add('hidden');
+    emptyState.classList.remove('hidden');
+    noResults.classList.add('hidden');
+    updateStats(programs);
+    return;
+  }
+
+  emptyState.classList.add('hidden');
+
+  // Update existing cards or create new ones
+  programs.forEach(program => {
+    let card = document.querySelector(`[data-program-id="${program.id}"]`);
+
+    if (!card) {
+      card = createProgramCard(program);
+      programsGrid.appendChild(card);
+    } else {
+      updateProgramCard(card, program);
+    }
+  });
+
+  // Remove cards for programs that no longer exist
+  const existingCards = programsGrid.querySelectorAll('.program-card');
+  existingCards.forEach(card => {
+    const id = card.getAttribute('data-program-id');
+    if (!programs.find(p => p.id === id)) {
+      card.remove();
+    }
+  });
+
+  // Apply search filter
+  filterPrograms();
+
+  // Update stats
+  updateStats(programs);
+}
+
+// Filter programs based on search query
+function filterPrograms() {
+  const cards = programsGrid.querySelectorAll('.program-card');
+  let visibleCount = 0;
+
+  cards.forEach(card => {
+    const programId = card.getAttribute('data-program-id');
+    const program = currentPrograms.find(p => p.id === programId);
+
+    if (!program) return;
+
+    const searchLower = searchQuery.toLowerCase();
+    const matches = !searchQuery ||
+      program.name.toLowerCase().includes(searchLower) ||
+      program.id.toLowerCase().includes(searchLower) ||
+      (program.path && program.path.toLowerCase().includes(searchLower)) ||
+      (program.url && program.url.toLowerCase().includes(searchLower));
+
+    if (matches) {
+      card.classList.remove('hidden');
+      visibleCount++;
+    } else {
+      card.classList.add('hidden');
+    }
+  });
+
+  // Show/hide grid and no results message
+  if (visibleCount === 0 && searchQuery) {
+    programsGrid.classList.add('hidden');
+    noResults.classList.remove('hidden');
+  } else {
+    programsGrid.classList.remove('hidden');
+    noResults.classList.add('hidden');
+  }
+}
+
+// Update stats display
+function updateStats(programs) {
+  if (!programs) programs = currentPrograms;
+
+  const total = programs.length;
+  const running = programs.filter(p => p.status === 'running').length;
+  const stopped = programs.filter(p => p.status === 'stopped').length;
+
+  statTotal.textContent = total;
+  statRunning.textContent = running;
+  statStopped.textContent = stopped;
+}
+
+// Create program card
+function createProgramCard(program) {
+  const template = document.getElementById('programCardTemplate');
+  const card = template.content.cloneNode(true).querySelector('.program-card');
+
+  card.setAttribute('data-program-id', program.id);
+
+  const btnStart = card.querySelector('.btn-start');
+  const btnStop = card.querySelector('.btn-stop');
+  const btnRestart = card.querySelector('.btn-restart');
+  const btnLogs = card.querySelector('.btn-logs');
+  const btnOpen = card.querySelector('.btn-open');
+
+  btnStart.addEventListener('click', () => startProgram(program.id, btnStart));
+  btnStop.addEventListener('click', () => stopProgram(program.id, btnStop));
+  btnRestart.addEventListener('click', () => restartProgram(program.id, btnRestart));
+  btnLogs.addEventListener('click', () => toggleLogs(program.id, card));
+
+  // Add click handler for Open button
+  btnOpen.addEventListener('click', () => {
+    const targetUrl = resolveProgramUrl(program.url);
+    if (targetUrl) {
+      window.open(targetUrl, '_blank');
+    }
+  });
+
+  // Add log search functionality
+  const logSearch = card.querySelector('.log-search');
+  logSearch.addEventListener('input', (e) => {
+    filterLogs(card, e.target.value);
+  });
+
+  // Add refresh logs button
+  const btnRefresh = card.querySelector('.btn-refresh-logs');
+  btnRefresh.addEventListener('click', () => {
+    refreshLogs(program.id, card);
+  });
+
+  const btnCloseLogs = card.querySelector('.btn-close-logs');
+  btnCloseLogs.addEventListener('click', () => {
+    card.querySelector('.program-logs').classList.add('hidden');
+  });
+
+  updateProgramCard(card, program);
+
+  return card;
+}
+
+// Update program card
+function updateProgramCard(card, program) {
+  const nameElement = card.querySelector('.program-name');
+
+  // Make program name clickable if URL exists
+  if (program.url) {
+    nameElement.innerHTML = `<a href="${program.url}" target="_blank" rel="noopener noreferrer" class="program-name-link">${program.name}</a>`;
+  } else {
+    nameElement.textContent = program.name;
+  }
+
+  card.querySelector('.program-path').textContent = program.path;
+  card.querySelector('.program-pid').textContent = program.pid || 'N/A';
+
+  // Handle uptime display
+  const uptimeRow = card.querySelector('.program-uptime-row');
+  const uptimeValue = card.querySelector('.program-uptime');
+  if (program.status === 'running' && program.uptime) {
+    uptimeRow.classList.remove('hidden');
+    uptimeValue.textContent = formatUptime(program.uptime);
+  } else {
+    uptimeRow.classList.add('hidden');
+  }
+
+  // Handle URL display
+  const urlRow = card.querySelector('.program-url-row');
+  const urlLink = card.querySelector('.program-url');
+  const btnOpen = card.querySelector('.btn-open');
+
+  const resolvedUrl = resolveProgramUrl(program.url);
+
+  if (resolvedUrl) {
+    urlRow.classList.remove('hidden');
+    urlLink.href = resolvedUrl;
+    urlLink.textContent = resolvedUrl;
+    btnOpen.classList.remove('hidden');
+  } else {
+    urlRow.classList.add('hidden');
+    btnOpen.classList.add('hidden');
+  }
+
+  const statusBadge = card.querySelector('.program-status');
+  statusBadge.textContent = program.status;
+  statusBadge.className = `program-status badge ${program.status}`;
+
+  const btnStart = card.querySelector('.btn-start');
+  const btnStop = card.querySelector('.btn-stop');
+  const btnRestart = card.querySelector('.btn-restart');
+
+  if (program.status === 'running') {
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+    btnRestart.disabled = false;
+  } else {
+    btnStart.disabled = false;
+    btnStop.disabled = true;
+    btnRestart.disabled = true;
+  }
+}
+
+// Show loading state on button
+function setButtonLoading(button, loading) {
+  if (loading) {
+    button.classList.add('loading');
+    button.disabled = true;
+  } else {
+    button.classList.remove('loading');
+  }
+}
+
+// API functions
+async function startProgram(id, button) {
+  if (button) setButtonLoading(button, true);
+
+  try {
+    const response = await fetch(`/api/programs/${id}/start`, {
+      method: 'POST'
+    });
+    const result = await response.json();
+
+    if (result.success) {
+      showToast(`Started ${result.data.name || id}`, 'success');
+    } else {
+      showToast(`Failed to start: ${result.error}`, 'error');
+    }
+  } catch (error) {
+    console.error('Error starting program:', error);
+    showToast('Failed to start program', 'error');
+  } finally {
+    if (button) setButtonLoading(button, false);
+  }
+}
+
+async function stopProgram(id, button) {
+  if (button) setButtonLoading(button, true);
+
+  try {
+    const response = await fetch(`/api/programs/${id}/stop`, {
+      method: 'POST'
+    });
+    const result = await response.json();
+
+    if (result.success) {
+      showToast(`Stopped ${id}`, 'success');
+    } else {
+      showToast(`Failed to stop: ${result.error}`, 'error');
+    }
+  } catch (error) {
+    console.error('Error stopping program:', error);
+    showToast('Failed to stop program', 'error');
+  } finally {
+    if (button) setButtonLoading(button, false);
+  }
+}
+
+async function restartProgram(id, button) {
+  if (button) setButtonLoading(button, true);
+
+  try {
+    const response = await fetch(`/api/programs/${id}/restart`, {
+      method: 'POST'
+    });
+    const result = await response.json();
+
+    if (result.success) {
+      showToast(`Restarted ${result.data.name || id}`, 'success');
+    } else {
+      showToast(`Failed to restart: ${result.error}`, 'error');
+    }
+  } catch (error) {
+    console.error('Error restarting program:', error);
+    showToast('Failed to restart program', 'error');
+  } finally {
+    if (button) setButtonLoading(button, false);
+  }
+}
+
+async function toggleLogs(id, card) {
+  const logsContainer = card.querySelector('.program-logs');
+  const logsContent = card.querySelector('.logs-content');
+
+  if (!logsContainer.classList.contains('hidden')) {
+    logsContainer.classList.add('hidden');
+    return;
+  }
+
+  await loadLogs(id, card);
+  logsContainer.classList.remove('hidden');
+}
+
+async function loadLogs(id, card) {
+  const logsContent = card.querySelector('.logs-content');
+
+  try {
+    const response = await fetch(`/api/programs/${id}/logs?lines=100`);
+    const logs = await response.json();
+
+    if (logs.length === 0) {
+      logsContent.textContent = 'No logs available';
+      logsContent.setAttribute('data-full-logs', '');
+    } else {
+      const fullText = logs.map(log => `${log.time} ${log.text}`).join('\n');
+      logsContent.textContent = fullText;
+      logsContent.setAttribute('data-full-logs', fullText);
+      // Scroll to bottom
+      logsContent.scrollTop = logsContent.scrollHeight;
+    }
+  } catch (error) {
+    console.error('Error fetching logs:', error);
+    logsContent.textContent = 'Error loading logs';
+    showToast('Failed to load logs', 'error');
+  }
+}
+
+async function refreshLogs(id, card) {
+  await loadLogs(id, card);
+  const searchInput = card.querySelector('.log-search');
+  if (searchInput.value) {
+    filterLogs(card, searchInput.value);
+  }
+  showToast('Logs refreshed', 'info', 2000);
+}
+
+function filterLogs(card, searchTerm) {
+  const logsContent = card.querySelector('.logs-content');
+  const fullLogs = logsContent.getAttribute('data-full-logs') || '';
+
+  if (!searchTerm) {
+    logsContent.textContent = fullLogs;
+    return;
+  }
+
+  const lines = fullLogs.split('\n');
+  const filtered = lines.filter(line =>
+    line.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  logsContent.textContent = filtered.join('\n') || 'No matching logs found';
+}
+
+// Bulk Operations
+async function startAll() {
+  const stoppedPrograms = currentPrograms.filter(p => p.status === 'stopped');
+  if (stoppedPrograms.length === 0) {
+    showToast('No stopped programs to start', 'info');
+    return;
+  }
+
+  showToast(`Starting ${stoppedPrograms.length} program(s)...`, 'info', 2000);
+
+  for (const program of stoppedPrograms) {
+    await startProgram(program.id);
+    await new Promise(resolve => setTimeout(resolve, 500)); // Small delay between starts
+  }
+}
+
+async function stopAll() {
+  const runningPrograms = currentPrograms.filter(p => p.status === 'running');
+  if (runningPrograms.length === 0) {
+    showToast('No running programs to stop', 'info');
+    return;
+  }
+
+  if (!confirm(`Are you sure you want to stop ${runningPrograms.length} program(s)?`)) {
+    return;
+  }
+
+  showToast(`Stopping ${runningPrograms.length} program(s)...`, 'info', 2000);
+
+  for (const program of runningPrograms) {
+    await stopProgram(program.id);
+    await new Promise(resolve => setTimeout(resolve, 300)); // Small delay between stops
+  }
+}
+
+async function restartAll() {
+  const runningPrograms = currentPrograms.filter(p => p.status === 'running');
+  if (runningPrograms.length === 0) {
+    showToast('No running programs to restart', 'info');
+    return;
+  }
+
+  if (!confirm(`Are you sure you want to restart ${runningPrograms.length} program(s)?`)) {
+    return;
+  }
+
+  showToast(`Restarting ${runningPrograms.length} program(s)...`, 'info', 2000);
+
+  for (const program of runningPrograms) {
+    await restartProgram(program.id);
+    await new Promise(resolve => setTimeout(resolve, 500)); // Small delay between restarts
+  }
+}
+
+async function rediscoverProjects() {
+  if (!confirm('Rediscover all projects?\n\nThis will scan the projects directory and regenerate config.json.\nYour existing config will be backed up.')) {
+    return;
+  }
+
+  showToast('Rediscovering projects…', 'info', 3000);
+
+  try {
+    const response = await fetch('/api/rediscover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      showToast(`✅ Rediscovered ${data.projectCount} project(s)!`, 'success', 4000);
+      // Status will be updated automatically via WebSocket
+    } else {
+      showToast(`❌ Rediscovery failed: ${data.error}`, 'error', 5000);
+    }
+  } catch (err) {
+    console.error('Failed to call /api/rediscover:', err);
+    showToast('Failed to trigger project rediscovery', 'error', 4000);
+  }
+}
+
+async function restartManager() {
+  if (!confirm('Restart HTTP Server Manager now?\n\nThis will stop the manager process; make sure a supervisor (systemd, another Server Manager, etc.) is configured to auto-restart it.')) {
+    return;
+  }
+
+  showToast('Restarting HTTP Server Manager…', 'info', 3000);
+
+  try {
+    const response = await fetch('/api/restart-manager', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'user-request' })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json().catch(() => ({}));
+    if (data && data.message) {
+      showToast(data.message, 'success', 3000);
+    }
+  } catch (err) {
+    console.error('Failed to call /api/restart-manager:', err);
+    showToast('Failed to trigger HTTP Server Manager restart', 'error', 4000);
+  }
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+  // Setup bulk action buttons
+  document.getElementById('btnStartAll').addEventListener('click', startAll);
+  document.getElementById('btnStopAll').addEventListener('click', stopAll);
+  document.getElementById('btnRestartAll').addEventListener('click', restartAll);
+
+  const btnRediscover = document.getElementById('btnRediscover');
+  if (btnRediscover) {
+    btnRediscover.addEventListener('click', rediscoverProjects);
+  }
+
+  const btnRestartManager = document.getElementById('btnRestartManager');
+  if (btnRestartManager) {
+    btnRestartManager.addEventListener('click', restartManager);
+  }
+
+  // Setup search functionality
+  searchInput.addEventListener('input', (e) => {
+    searchQuery = e.target.value;
+    filterPrograms();
+
+    // Show/hide clear button
+    if (searchQuery) {
+      btnClearSearch.classList.remove('hidden');
+    } else {
+      btnClearSearch.classList.add('hidden');
+    }
+  });
+
+  btnClearSearch.addEventListener('click', () => {
+    searchInput.value = '';
+    searchQuery = '';
+    filterPrograms();
+    btnClearSearch.classList.add('hidden');
+    searchInput.focus();
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    // Ctrl/Cmd + F: Focus search
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+    }
+
+    // Escape: Clear search and unfocus
+    if (e.key === 'Escape') {
+      if (searchQuery) {
+        searchInput.value = '';
+        searchQuery = '';
+        filterPrograms();
+        btnClearSearch.classList.add('hidden');
+        searchInput.blur();
+      }
+    }
+
+    // Ctrl/Cmd + K: Focus search (alternate shortcut)
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+    }
+  });
+
+  fetchPrograms();
+  connectWebSocket();
+
+  // Periodically update uptime displays
+  setInterval(() => {
+    document.querySelectorAll('.program-uptime').forEach(element => {
+      const card = element.closest('.program-card');
+      const programId = card.getAttribute('data-program-id');
+      const program = currentPrograms.find(p => p.id === programId);
+      if (program && program.status === 'running' && program.uptime) {
+        element.textContent = formatUptime(program.uptime);
+      }
+    });
+  }, 1000);
+
+  // Show keyboard shortcuts hint
+  console.log('🎮 Keyboard Shortcuts:');
+  console.log('  Ctrl/Cmd + F or K: Focus search');
+  console.log('  Escape: Clear search');
+});
