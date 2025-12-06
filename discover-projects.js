@@ -84,9 +84,24 @@ function parseStartScript(scriptPath) {
     let match;
     while ((match = envVarPattern.exec(content)) !== null) {
       const [, key, value] = match;
-      if (key !== 'PATH' && key !== 'HOME' && !env[key]) {
-        env[key] = value.trim();
+      // Skip PATH, HOME, and keys already set (PORT, HOST)
+      // Also skip variable references like $HOST, $PORT, ${VAR}
+      const trimmedValue = value.trim();
+      if (key !== 'PATH' && key !== 'HOME' && !env[key] && !trimmedValue.startsWith('$')) {
+        env[key] = trimmedValue;
       }
+    }
+
+    // Validate PORT is numeric, remove if not
+    if (env.PORT && !/^\d+$/.test(env.PORT)) {
+      console.warn(`  ⚠️  Invalid PORT value "${env.PORT}" (not numeric), removing`);
+      delete env.PORT;
+    }
+
+    // Validate HOST is valid IP or hostname
+    if (env.HOST && env.HOST.startsWith('$')) {
+      console.warn(`  ⚠️  Invalid HOST value "${env.HOST}" (variable reference), removing`);
+      delete env.HOST;
     }
 
     return { env, hasFlask, hasExpress, hasStreamlit };

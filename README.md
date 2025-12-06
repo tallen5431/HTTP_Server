@@ -230,6 +230,33 @@ curl -X POST "http://localhost:3000/api/programs/my-app/start?token=YOUR_TOKEN"
 
 ## Troubleshooting
 
+### Invalid PORT errors (ValueError: invalid literal for int)?
+
+This happens when PORT is set to a non-numeric value like "HOST" or "$HOST". To fix:
+
+1. **Validate and fix your config:**
+   ```bash
+   node validate-config.js
+   ```
+   This will automatically detect and fix invalid PORT/HOST values.
+
+2. **Or rediscover with fixed validation:**
+   - Click the 🔍 Rediscover button in the web interface
+   - Enter your projects directory path
+   - The improved discovery script will now skip invalid PORT values
+
+3. **Or manually edit config.json:**
+   - Open `config.json`
+   - Find programs with `"PORT": "HOST"` or similar
+   - Change to a valid port number like `"PORT": "8080"` or remove the PORT field
+
+### Missing "Open" buttons?
+
+The Open button only appears when a program has a valid URL. To see Open buttons:
+- Make sure the program has a `PORT` environment variable in config.json
+- Ensure PORT is a valid number (not "HOST" or variable references)
+- Or manually set a `url` field in the program configuration
+
 ### Programs not starting?
 
 1. Check that `Start.sh` exists and is executable:
@@ -240,6 +267,11 @@ curl -X POST "http://localhost:3000/api/programs/my-app/start?token=YOUR_TOKEN"
 2. View the program logs in the web interface for error messages
 
 3. Make sure the program's dependencies are installed
+
+4. Validate your config for common issues:
+   ```bash
+   node validate-config.js
+   ```
 
 ### Can't access from other devices?
 
