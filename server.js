@@ -497,6 +497,190 @@ app.post('/api/restart-manager', requireApiToken, (req, res) => {
   }, 1000);
 });
 
+// Config editing endpoints
+app.put('/api/programs/:id', requireApiToken, (req, res) => {
+  try {
+    const programId = req.params.id;
+    const updates = req.body;
+
+    console.log(`[manager] Updating program: ${programId}`);
+
+    const config = loadConfig();
+    const programIndex = config.programs.findIndex(p => p.id === programId);
+
+    if (programIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        error: `Program not found: ${programId}`
+      });
+    }
+
+    // Update program with new values
+    const program = config.programs[programIndex];
+    if (updates.name !== undefined) program.name = updates.name;
+    if (updates.path !== undefined) program.path = updates.path;
+    if (updates.url !== undefined) program.url = updates.url;
+    if (updates.env !== undefined) program.env = updates.env;
+
+    // Validate the updated config
+    validateConfig(config);
+
+    // Backup existing config
+    if (fs.existsSync(CONFIG_FILE)) {
+      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
+      fs.copyFileSync(CONFIG_FILE, backupFile);
+    }
+
+    // Save updated config
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+    console.log(`[manager] Updated program: ${programId}`);
+
+    // Clear cache
+    cachedConfig = null;
+    cachedConfigMtimeMs = null;
+
+    res.json({
+      success: true,
+      message: `Program ${programId} updated successfully`
+    });
+
+    // Broadcast updated status
+    setTimeout(() => broadcastStatus(), 500);
+  } catch (err) {
+    console.error('[manager] Failed to update program:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+app.post('/api/programs', requireApiToken, (req, res) => {
+  try {
+    const newProgram = req.body;
+
+    console.log(`[manager] Adding new program: ${newProgram.id}`);
+
+    // Validate required fields
+    if (!newProgram.id || !newProgram.name || !newProgram.path) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: id, name, path'
+      });
+    }
+
+    const config = loadConfig();
+
+    // Check for duplicate ID
+    if (config.programs.find(p => p.id === newProgram.id)) {
+      return res.status(400).json({
+        success: false,
+        error: `Program with ID "${newProgram.id}" already exists`
+      });
+    }
+
+    // Ensure env object exists
+    if (!newProgram.env) {
+      newProgram.env = {};
+    }
+
+    // Add new program
+    config.programs.push(newProgram);
+
+    // Validate the updated config
+    validateConfig(config);
+
+    // Backup existing config
+    if (fs.existsSync(CONFIG_FILE)) {
+      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
+      fs.copyFileSync(CONFIG_FILE, backupFile);
+    }
+
+    // Save updated config
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+    console.log(`[manager] Added new program: ${newProgram.id}`);
+
+    // Clear cache
+    cachedConfig = null;
+    cachedConfigMtimeMs = null;
+
+    res.json({
+      success: true,
+      message: `Program ${newProgram.id} added successfully`,
+      program: newProgram
+    });
+
+    // Broadcast updated status
+    setTimeout(() => broadcastStatus(), 500);
+  } catch (err) {
+    console.error('[manager] Failed to add program:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+app.delete('/api/programs/:id', requireApiToken, (req, res) => {
+  try {
+    const programId = req.params.id;
+
+    console.log(`[manager] Removing program: ${programId}`);
+
+    const config = loadConfig();
+    const programIndex = config.programs.findIndex(p => p.id === programId);
+
+    if (programIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        error: `Program not found: ${programId}`
+      });
+    }
+
+    // Stop the program if it's running
+    const proc = processes.get(programId);
+    if (proc && !proc.killed) {
+      console.log(`[manager] Stopping program before removal: ${programId}`);
+      proc.kill('SIGTERM');
+    }
+
+    // Remove from config
+    config.programs.splice(programIndex, 1);
+
+    // Backup existing config
+    if (fs.existsSync(CONFIG_FILE)) {
+      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
+      fs.copyFileSync(CONFIG_FILE, backupFile);
+    }
+
+    // Save updated config
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+    console.log(`[manager] Removed program: ${programId}`);
+
+    // Clear cache
+    cachedConfig = null;
+    cachedConfigMtimeMs = null;
+
+    // Clean up process logs
+    processLogs.delete(programId);
+    processes.delete(programId);
+
+    res.json({
+      success: true,
+      message: `Program ${programId} removed successfully`
+    });
+
+    // Broadcast updated status
+    setTimeout(() => broadcastStatus(), 500);
+  } catch (err) {
+    console.error('[manager] Failed to remove program:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
 // Start server
 async function startServer() {
   const config = loadConfig();

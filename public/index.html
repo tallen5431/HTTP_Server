@@ -32,6 +32,9 @@
         <button class="btn btn-warning btn-sm" id="btnRestartManager" title="Restart the HTTP Server Manager process">
           <span>⟳</span> Restart Manager
         </button>
+        <button class="btn btn-success btn-sm" id="btnAddProgram" title="Add a new program">
+          <span>➕</span> Add Program
+        </button>
       </div>
     </header>
 
@@ -120,6 +123,12 @@
         <button class="btn btn-secondary btn-logs" title="View Logs">
           <span>📄</span> Logs
         </button>
+        <button class="btn btn-secondary btn-edit" title="Edit Program">
+          <span>✏️</span> Edit
+        </button>
+        <button class="btn btn-danger btn-delete" title="Delete Program">
+          <span>🗑️</span> Delete
+        </button>
       </div>
       <div class="program-logs hidden">
         <div class="logs-header">
@@ -134,6 +143,57 @@
       </div>
     </div>
   </template>
+
+  <!-- Edit/Add Program Modal -->
+  <div class="modal hidden" id="programModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modalTitle">Edit Program</h2>
+        <button class="modal-close" id="modalClose">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="programForm">
+          <div class="form-group">
+            <label for="programId">ID <span class="required">*</span></label>
+            <input type="text" id="programId" class="form-input" required pattern="[a-z0-9-]+" title="Lowercase letters, numbers, and hyphens only">
+            <small>Lowercase letters, numbers, and hyphens only</small>
+          </div>
+
+          <div class="form-group">
+            <label for="programName">Name <span class="required">*</span></label>
+            <input type="text" id="programName" class="form-input" required>
+          </div>
+
+          <div class="form-group">
+            <label for="programPath">Path <span class="required">*</span></label>
+            <input type="text" id="programPath" class="form-input" required>
+            <small>Absolute path to the program directory (must contain Start.sh)</small>
+          </div>
+
+          <div class="form-group">
+            <label for="programUrl">URL (optional)</label>
+            <input type="text" id="programUrl" class="form-input" placeholder="http://example.com or /path">
+            <small>Manual URL override. Leave empty to auto-generate from PORT</small>
+          </div>
+
+          <div class="form-group">
+            <label>Environment Variables</label>
+            <div id="envVars">
+              <!-- Environment variables will be added here -->
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btnAddEnvVar">
+              <span>➕</span> Add Variable
+            </button>
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" id="btnCancel">Cancel</button>
+            <button type="submit" class="btn btn-success" id="btnSave">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

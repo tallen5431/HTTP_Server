@@ -269,6 +269,8 @@ function createProgramCard(program) {
   const btnRestart = card.querySelector('.btn-restart');
   const btnLogs = card.querySelector('.btn-logs');
   const btnOpen = card.querySelector('.btn-open');
+  const btnEdit = card.querySelector('.btn-edit');
+  const btnDelete = card.querySelector('.btn-delete');
 
   btnStart.addEventListener('click', () => startProgram(program.id, btnStart));
   btnStop.addEventListener('click', () => stopProgram(program.id, btnStop));
@@ -281,6 +283,32 @@ function createProgramCard(program) {
     if (targetUrl) {
       window.open(targetUrl, '_blank');
     }
+  });
+
+  // Add click handler for Edit button
+  btnEdit.addEventListener('click', () => {
+    // Fetch the current program details from currentPrograms
+    const currentProgram = currentPrograms.find(p => p.id === program.id);
+    if (currentProgram) {
+      // Fetch full config to get env vars
+      fetch('/api/config')
+        .then(res => res.json())
+        .then(config => {
+          const fullProgram = config.programs.find(p => p.id === program.id);
+          if (fullProgram) {
+            openModal(fullProgram);
+          }
+        })
+        .catch(err => {
+          console.error('Error fetching config:', err);
+          showToast('Failed to load program details', 'error');
+        });
+    }
+  });
+
+  // Add click handler for Delete button
+  btnDelete.addEventListener('click', () => {
+    deleteProgram(program.id, program.name);
   });
 
   // Add log search functionality
@@ -633,6 +661,156 @@ async function restartManager() {
   }
 }
 
+// Modal and editing functions
+let editingProgram = null;
+const programModal = document.getElementById('programModal');
+const modalTitle = document.getElementById('modalTitle');
+const programForm = document.getElementById('programForm');
+const programIdInput = document.getElementById('programId');
+const programNameInput = document.getElementById('programName');
+const programPathInput = document.getElementById('programPath');
+const programUrlInput = document.getElementById('programUrl');
+const envVarsContainer = document.getElementById('envVars');
+
+function openModal(program = null) {
+  editingProgram = program;
+
+  if (program) {
+    // Editing existing program
+    modalTitle.textContent = 'Edit Program';
+    programIdInput.value = program.id;
+    programIdInput.disabled = true; // Can't change ID
+    programNameInput.value = program.name;
+    programPathInput.value = program.path || '';
+    programUrlInput.value = program.url || '';
+
+    // Load environment variables
+    envVarsContainer.innerHTML = '';
+    if (program.env) {
+      Object.entries(program.env).forEach(([key, value]) => {
+        addEnvVarRow(key, value);
+      });
+    }
+  } else {
+    // Adding new program
+    modalTitle.textContent = 'Add Program';
+    programIdInput.disabled = false;
+    programForm.reset();
+    envVarsContainer.innerHTML = '';
+    // Add default env vars
+    addEnvVarRow('HOST', '0.0.0.0');
+    addEnvVarRow('PORT', '');
+  }
+
+  programModal.classList.remove('hidden');
+}
+
+function closeModal() {
+  programModal.classList.add('hidden');
+  programForm.reset();
+  editingProgram = null;
+}
+
+function addEnvVarRow(key = '', value = '') {
+  const row = document.createElement('div');
+  row.className = 'env-var-row';
+
+  row.innerHTML = `
+    <input type="text" class="env-key" placeholder="KEY" value="${key}" pattern="[A-Z_][A-Z0-9_]*" title="Uppercase letters, numbers, and underscores">
+    <input type="text" class="env-value" placeholder="value" value="${value}">
+    <button type="button" class="btn-remove-env" onclick="this.parentElement.remove()">✕</button>
+  `;
+
+  envVarsContainer.appendChild(row);
+}
+
+async function saveProgram(e) {
+  e.preventDefault();
+
+  const id = programIdInput.value.trim();
+  const name = programNameInput.value.trim();
+  const path = programPathInput.value.trim();
+  const url = programUrlInput.value.trim();
+
+  // Collect environment variables
+  const env = {};
+  const envRows = envVarsContainer.querySelectorAll('.env-var-row');
+  envRows.forEach(row => {
+    const key = row.querySelector('.env-key').value.trim();
+    const value = row.querySelector('.env-value').value.trim();
+    if (key) {
+      env[key] = value;
+    }
+  });
+
+  const programData = {
+    id,
+    name,
+    path,
+    env
+  };
+
+  if (url) {
+    programData.url = url;
+  }
+
+  try {
+    let response;
+    if (editingProgram) {
+      // Update existing program
+      response = await fetch(`/api/programs/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(programData)
+      });
+    } else {
+      // Add new program
+      response = await fetch('/api/programs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(programData)
+      });
+    }
+
+    const result = await response.json();
+
+    if (result.success) {
+      showToast(result.message, 'success');
+      closeModal();
+      // Status will update automatically via WebSocket
+    } else {
+      showToast(`Failed: ${result.error}`, 'error');
+    }
+  } catch (error) {
+    console.error('Error saving program:', error);
+    showToast('Failed to save program', 'error');
+  }
+}
+
+async function deleteProgram(id, programName) {
+  if (!confirm(`Are you sure you want to delete "${programName}"?\n\nThis will stop the program if running and remove it from the config.`)) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/programs/${id}`, {
+      method: 'DELETE'
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      showToast(result.message, 'success');
+      // Status will update automatically via WebSocket
+    } else {
+      showToast(`Failed: ${result.error}`, 'error');
+    }
+  } catch (error) {
+    console.error('Error deleting program:', error);
+    showToast('Failed to delete program', 'error');
+  }
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   // Setup bulk action buttons
@@ -649,6 +827,20 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnRestartManager) {
     btnRestartManager.addEventListener('click', restartManager);
   }
+
+  // Setup modal event listeners
+  document.getElementById('btnAddProgram').addEventListener('click', () => openModal());
+  document.getElementById('modalClose').addEventListener('click', closeModal);
+  document.getElementById('btnCancel').addEventListener('click', closeModal);
+  document.getElementById('programForm').addEventListener('submit', saveProgram);
+  document.getElementById('btnAddEnvVar').addEventListener('click', () => addEnvVarRow());
+
+  // Close modal on background click
+  programModal.addEventListener('click', (e) => {
+    if (e.target === programModal) {
+      closeModal();
+    }
+  });
 
   // Setup search functionality
   searchInput.addEventListener('input', (e) => {
@@ -673,22 +865,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
-    // Ctrl/Cmd + F: Focus search
-    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-      e.preventDefault();
-      searchInput.focus();
-      searchInput.select();
-    }
-
-    // Escape: Clear search and unfocus
+    // Escape: Close modal or clear search
     if (e.key === 'Escape') {
-      if (searchQuery) {
+      if (!programModal.classList.contains('hidden')) {
+        closeModal();
+      } else if (searchQuery) {
         searchInput.value = '';
         searchQuery = '';
         filterPrograms();
         btnClearSearch.classList.add('hidden');
         searchInput.blur();
       }
+    }
+
+    // Ctrl/Cmd + F: Focus search
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
     }
 
     // Ctrl/Cmd + K: Focus search (alternate shortcut)

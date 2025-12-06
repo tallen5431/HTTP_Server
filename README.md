@@ -190,16 +190,26 @@ python app.py
 
 The manager provides a REST API:
 
+**Program Control:**
 - `GET /api/programs` - List all programs and their status
 - `POST /api/programs/:id/start` - Start a program
 - `POST /api/programs/:id/stop` - Stop a program
 - `POST /api/programs/:id/restart` - Restart a program
 - `GET /api/programs/:id/logs` - Get program logs
+
+**Program Management:**
+- `POST /api/programs` - Add a new program (requires auth)
+- `PUT /api/programs/:id` - Update a program (requires auth)
+- `DELETE /api/programs/:id` - Remove a program (requires auth)
+
+**Configuration:**
 - `GET /api/config` - Get current configuration
+- `POST /api/rediscover` - Rediscover projects and regenerate config (requires auth)
+
+**System:**
 - `GET /api/stats` - Get statistics
 - `GET /api/health` - Health check
-- `POST /api/rediscover` - Rediscover projects and regenerate config
-- `POST /api/restart-manager` - Restart the manager process
+- `POST /api/restart-manager` - Restart the manager process (requires auth)
 
 ### Authentication
 
@@ -219,14 +229,46 @@ curl -X POST "http://localhost:3000/api/programs/my-app/start?token=YOUR_TOKEN"
 - **Real-time Status**: See which programs are running/stopped with live updates
 - **One-Click Controls**: Start, stop, or restart any program with a single click
 - **Bulk Operations**: Start/stop/restart all programs at once
+- **Program Editor**: Edit program settings directly in the web interface
+  - Edit program name, path, and URL
+  - Modify environment variables (PORT, HOST, etc.)
+  - Add/remove environment variables dynamically
+- **Add/Remove Programs**: Add new programs or delete existing ones
 - **Log Viewer**: View and search program logs in real-time
 - **Search**: Quickly find programs by name, ID, path, or URL (Ctrl+F or Ctrl+K)
 - **Responsive Design**: Works on desktop, tablet, and mobile devices
 
+### Editing Programs
+
+1. Click the ✏️ **Edit** button on any program card
+2. Modify settings:
+   - **Name**: Display name in the UI
+   - **Path**: Absolute path to the program directory (must contain Start.sh)
+   - **URL**: Optional manual URL override
+   - **Environment Variables**: Add, edit, or remove variables like PORT, HOST, etc.
+3. Click **Save** to apply changes
+4. The config is automatically backed up before saving
+
+### Adding Programs
+
+1. Click the ➕ **Add Program** button in the header
+2. Fill in the required fields:
+   - **ID**: Unique identifier (lowercase, hyphens allowed)
+   - **Name**: Display name
+   - **Path**: Path to the program directory
+3. Add environment variables as needed
+4. Click **Save**
+
+### Removing Programs
+
+1. Click the 🗑️ **Delete** button on any program card
+2. Confirm the deletion
+3. The program will be stopped if running and removed from the config
+
 ## Keyboard Shortcuts
 
 - `Ctrl/Cmd + F` or `Ctrl/Cmd + K`: Focus search
-- `Escape`: Clear search
+- `Escape`: Close modal or clear search
 
 ## Troubleshooting
 
