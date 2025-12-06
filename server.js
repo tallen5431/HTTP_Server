@@ -284,14 +284,20 @@ app.post('/api/programs/:id/stop', requireApiToken, (req, res) => {
 
 app.post('/api/programs/:id/restart', requireApiToken, (req, res) => {
   try {
+    const programId = req.params.id;
     const config = loadConfig();
-    stopProgram(req.params.id);
 
-    // Wait a bit before restarting
+    stopProgram(programId);
+
+    // Wait a bit for the process to fully exit before restarting
     setTimeout(() => {
-      const result = startProgram(req.params.id, config);
-      res.json({ success: true, data: result });
-    }, 1000);
+      try {
+        const result = startProgram(programId, config);
+        res.json({ success: true, data: result });
+      } catch (startErr) {
+        res.status(500).json({ success: false, error: `Restart failed: ${startErr.message}` });
+      }
+    }, 1500);
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
@@ -338,7 +344,10 @@ function startProgram(programId, config) {
   const program = getProgramConfig(programId, config);
   const existingProcess = processes.get(programId);
 
-  if (existingProcess && !existingProcess.killed) {
+  // Clean up killed processes before starting
+  if (existingProcess && existingProcess.killed) {
+    processes.delete(programId);
+  } else if (existingProcess && !existingProcess.killed) {
     throw new Error('Program is already running');
   }
 
@@ -386,6 +395,10 @@ function startProgram(programId, config) {
   proc.on('exit', (code) => {
     const line = `[system] Process exited with code ${code}`;
     logs.push({ time: new Date().toISOString(), text: line });
+
+    // Clean up the process from the registry
+    processes.delete(programId);
+
     broadcastStatus();
   });
 
