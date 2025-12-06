@@ -9,8 +9,8 @@ export PORT="${PORT:-3000}"
 # Set config file if not specified
 export CONFIG_FILE="${CONFIG_FILE:-./config.json}"
 
-# Optional: Set PROJECTS_DIR for auto-discovery
-# export PROJECTS_DIR="/path/to/your/projects"
+# Set default projects directory for auto-discovery
+export PROJECTS_DIR="${PROJECTS_DIR:-/home/jupyter-tj/projects}"
 
 # Optional: Set API token for authentication
 # export MANAGER_API_TOKEN="your-secret-token"
@@ -18,6 +18,7 @@ export CONFIG_FILE="${CONFIG_FILE:-./config.json}"
 echo "Starting HTTP Server Manager..."
 echo "Port: $PORT"
 echo "Config: $CONFIG_FILE"
+echo "Projects Directory: $PROJECTS_DIR"
 
 # Start the server
 node server.js

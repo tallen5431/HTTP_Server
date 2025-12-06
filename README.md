@@ -37,7 +37,11 @@ You have two options:
 Let the manager automatically find all your projects:
 
 ```bash
-# Set PROJECTS_DIR to your projects folder
+# The manager defaults to /home/jupyter-tj/projects
+# Just run:
+npm start
+
+# Or specify a custom projects directory:
 PROJECTS_DIR=/path/to/your/projects npm start
 ```
 
@@ -46,6 +50,7 @@ The manager will:
 - Auto-generate `config.json` with intelligent defaults
 - Detect framework types and PORT configurations
 - Set up environment variables automatically
+- Default to `/home/jupyter-tj/projects` if not specified
 
 #### Option B: Manual Configuration
 
@@ -101,7 +106,8 @@ node discover-projects.js /path/to/your/projects --output my-config.json
 
 **Web UI Rediscovery:**
 - Click the "🔍 Rediscover" button in the web interface
-- Scans projects directory and regenerates config.json
+- Enter the projects directory path when prompted (defaults to `/home/jupyter-tj/projects`)
+- Scans the specified directory and regenerates config.json
 - Automatically backs up existing config
 - All changes take effect immediately
 

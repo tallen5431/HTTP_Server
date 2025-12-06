@@ -9,7 +9,7 @@ const WebSocket = require('ws');
 
 // Configuration
 const CONFIG_FILE = process.env.CONFIG_FILE || './config.json';
-const PROJECTS_DIR = process.env.PROJECTS_DIR || null; // Optional: auto-discover projects from this directory
+const PROJECTS_DIR = process.env.PROJECTS_DIR || '/home/jupyter-tj/projects'; // Default projects directory
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.MANAGER_API_TOKEN || null;
 

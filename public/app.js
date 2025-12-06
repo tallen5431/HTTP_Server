@@ -560,7 +560,25 @@ async function restartAll() {
 }
 
 async function rediscoverProjects() {
-  if (!confirm('Rediscover all projects?\n\nThis will scan the projects directory and regenerate config.json.\nYour existing config will be backed up.')) {
+  // Prompt for projects directory
+  const defaultPath = '/home/jupyter-tj/projects';
+  const projectsDir = prompt(
+    'Enter the path to your projects directory:\n\n' +
+    'This will scan the directory for projects with Start.sh files\n' +
+    'and regenerate config.json.\n\n' +
+    'Your existing config will be backed up.',
+    defaultPath
+  );
+
+  // User cancelled
+  if (projectsDir === null) {
+    return;
+  }
+
+  // Validate input
+  const trimmedPath = projectsDir.trim();
+  if (!trimmedPath) {
+    showToast('❌ Please enter a valid directory path', 'error');
     return;
   }
 
@@ -570,13 +588,13 @@ async function rediscoverProjects() {
     const response = await fetch('/api/rediscover', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
+      body: JSON.stringify({ projectsDir: trimmedPath })
     });
 
     const data = await response.json();
 
     if (data.success) {
-      showToast(`✅ Rediscovered ${data.projectCount} project(s)!`, 'success', 4000);
+      showToast(`✅ Rediscovered ${data.projectCount} project(s) from ${trimmedPath}!`, 'success', 5000);
       // Status will be updated automatically via WebSocket
     } else {
       showToast(`❌ Rediscovery failed: ${data.error}`, 'error', 5000);
