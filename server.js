@@ -351,18 +351,52 @@ function startProgram(programId, config) {
     throw new Error('Program is already running');
   }
 
-  const startScript = path.join(program.path, 'Start.sh');
+  // Detect platform and find appropriate start script
+  const isWindows = process.platform === 'win32';
+  const startScriptSh = path.join(program.path, 'Start.sh');
+  const startScriptBat = path.join(program.path, 'Start.bat');
 
-  if (!fs.existsSync(startScript)) {
-    console.warn(`Start script not found for program: ${programId}`);
+  let startScript;
+  let shell;
+  let shellArgs;
+
+  // Determine which start script to use based on platform and availability
+  if (isWindows) {
+    // On Windows, prefer Start.bat but fall back to Start.sh
+    if (fs.existsSync(startScriptBat)) {
+      startScript = startScriptBat;
+      shell = 'cmd.exe';
+      shellArgs = ['/c', startScript];
+    } else if (fs.existsSync(startScriptSh)) {
+      startScript = startScriptSh;
+      shell = 'bash';
+      shellArgs = [startScript];
+    } else {
+      throw new Error(`No start script found for program: ${programId} (looked for Start.bat and Start.sh)`);
+    }
+  } else {
+    // On Linux/Unix, prefer Start.sh but fall back to Start.bat (in case of cross-platform projects)
+    if (fs.existsSync(startScriptSh)) {
+      startScript = startScriptSh;
+      shell = 'bash';
+      shellArgs = [startScript];
+    } else if (fs.existsSync(startScriptBat)) {
+      startScript = startScriptBat;
+      shell = 'cmd.exe';
+      shellArgs = ['/c', startScript];
+    } else {
+      throw new Error(`No start script found for program: ${programId} (looked for Start.sh and Start.bat)`);
+    }
   }
+
+  console.log(`[manager] Starting ${programId} using ${path.basename(startScript)} with ${shell}`);
 
   const env = {
     ...process.env,
     ...program.env
   };
 
-  const proc = spawn('bash', [startScript], {
+  const proc = spawn(shell, shellArgs, {
     cwd: program.path,
     env
   });

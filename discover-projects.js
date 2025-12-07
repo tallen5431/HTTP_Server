@@ -3,8 +3,8 @@
 /**
  * Auto-Discovery Script for HTTP Server Manager
  *
- * Scans a directory for projects with Start.sh files and automatically
- * generates config.json with intelligent defaults.
+ * Scans a directory for projects with Start.sh (Linux) or Start.bat (Windows) files
+ * and automatically generates config.json with intelligent defaults.
  *
  * Usage:
  *   node discover-projects.js [projects-dir] [--output config.json] [--dry-run]
@@ -28,7 +28,7 @@ const DRY_RUN = process.argv.includes('--dry-run');
 /**
  * Parse Start.sh file to extract environment variables and configuration
  */
-function parseStartScript(scriptPath) {
+function parseStartScriptSh(scriptPath) {
   try {
     const content = fs.readFileSync(scriptPath, 'utf8');
     const env = {};
@@ -108,6 +108,105 @@ function parseStartScript(scriptPath) {
   } catch (err) {
     console.warn(`Warning: Could not parse ${scriptPath}:`, err.message);
     return { env: {}, hasFlask: false, hasExpress: false, hasStreamlit: false };
+  }
+}
+
+/**
+ * Parse Start.bat file to extract environment variables and configuration
+ */
+function parseStartScriptBat(scriptPath) {
+  try {
+    const content = fs.readFileSync(scriptPath, 'utf8');
+    const env = {};
+    let hasFlask = false;
+    let hasExpress = false;
+    let hasStreamlit = false;
+
+    // Detect framework/type
+    if (content.includes('flask') || content.includes('python') && content.includes('app.py')) {
+      hasFlask = true;
+    }
+    if (content.includes('node') || content.includes('npm') || content.includes('yarn')) {
+      hasExpress = true;
+    }
+    if (content.includes('streamlit')) {
+      hasStreamlit = true;
+    }
+
+    // Extract PORT from various patterns (Windows batch format)
+    const portPatterns = [
+      /set\s+PORT[=\s]+["']?(\d+)["']?/i,
+      /PORT[=\s]+["']?(\d+)["']?/i,
+      /--port[=\s]+["']?(\d+)["']?/i,
+      /-p[=\s]+["']?(\d+)["']?/i,
+      /listen[=\s]+["']?(\d+)["']?/i,
+      /port[=\s]+["']?(\d+)["']?/i
+    ];
+
+    for (const pattern of portPatterns) {
+      const match = content.match(pattern);
+      if (match && match[1]) {
+        env.PORT = match[1];
+        break;
+      }
+    }
+
+    // Extract HOST
+    const hostPatterns = [
+      /set\s+HOST[=\s]+["']?([0-9.]+)["']?/i,
+      /HOST[=\s]+["']?([0-9.]+)["']?/i,
+      /--host[=\s]+["']?([0-9.]+)["']?/i,
+      /-h[=\s]+["']?([0-9.]+)["']?/i
+    ];
+
+    for (const pattern of hostPatterns) {
+      const match = content.match(pattern);
+      if (match && match[1]) {
+        env.HOST = match[1];
+        break;
+      }
+    }
+
+    // Extract other environment variables (Windows batch set command)
+    const envVarPattern = /set\s+([A-Z_][A-Z0-9_]*)[=\s]+["']?([^"'\n\r]+)["']?/gi;
+    let match;
+    while ((match = envVarPattern.exec(content)) !== null) {
+      const [, key, value] = match;
+      // Skip PATH, HOME, and keys already set (PORT, HOST)
+      // Also skip variable references like %HOST%, %PORT%, %VAR%
+      const trimmedValue = value.trim();
+      if (key !== 'PATH' && key !== 'HOME' && !env[key] && !trimmedValue.startsWith('%')) {
+        env[key] = trimmedValue;
+      }
+    }
+
+    // Validate PORT is numeric, remove if not
+    if (env.PORT && !/^\d+$/.test(env.PORT)) {
+      console.warn(`  ⚠️  Invalid PORT value "${env.PORT}" (not numeric), removing`);
+      delete env.PORT;
+    }
+
+    // Validate HOST is valid IP or hostname
+    if (env.HOST && env.HOST.startsWith('%')) {
+      console.warn(`  ⚠️  Invalid HOST value "${env.HOST}" (variable reference), removing`);
+      delete env.HOST;
+    }
+
+    return { env, hasFlask, hasExpress, hasStreamlit };
+  } catch (err) {
+    console.warn(`Warning: Could not parse ${scriptPath}:`, err.message);
+    return { env: {}, hasFlask: false, hasExpress: false, hasStreamlit: false };
+  }
+}
+
+/**
+ * Parse start script (either .sh or .bat) to extract environment variables and configuration
+ */
+function parseStartScript(scriptPath) {
+  if (scriptPath.endsWith('.bat')) {
+    return parseStartScriptBat(scriptPath);
+  } else {
+    return parseStartScriptSh(scriptPath);
   }
 }
 
@@ -205,17 +304,26 @@ function discoverProjects(projectsDir) {
     if (!entry.isDirectory()) continue;
 
     const projectPath = path.join(projectsDir, entry.name);
-    const startScriptPath = path.join(projectPath, 'Start.sh');
+    const startScriptShPath = path.join(projectPath, 'Start.sh');
+    const startScriptBatPath = path.join(projectPath, 'Start.bat');
 
-    // Skip if no Start.sh
-    if (!fs.existsSync(startScriptPath)) {
-      console.log(`  ⊗ Skipping ${entry.name} (no Start.sh found)`);
+    // Check for either Start.sh or Start.bat
+    let startScriptPath = null;
+    if (fs.existsSync(startScriptShPath)) {
+      startScriptPath = startScriptShPath;
+    } else if (fs.existsSync(startScriptBatPath)) {
+      startScriptPath = startScriptBatPath;
+    }
+
+    // Skip if no start script found
+    if (!startScriptPath) {
+      console.log(`  ⊗ Skipping ${entry.name} (no Start.sh or Start.bat found)`);
       continue;
     }
 
-    console.log(`  ✓ Found project: ${entry.name}`);
+    console.log(`  ✓ Found project: ${entry.name} (${path.basename(startScriptPath)})`);
 
-    // Parse Start.sh
+    // Parse start script
     const { env, hasFlask, hasExpress, hasStreamlit } = parseStartScript(startScriptPath);
 
     // Detect metadata
@@ -283,8 +391,8 @@ function main() {
   console.log(`  Projects with PORT: ${projects.filter(p => p.env.PORT).length}`);
 
   if (projects.length === 0) {
-    console.log('\n⚠️  No projects with Start.sh found!');
-    console.log('   Make sure your projects have a Start.sh file in their root directory.');
+    console.log('\n⚠️  No projects with start scripts found!');
+    console.log('   Make sure your projects have a Start.sh (Linux) or Start.bat (Windows) file in their root directory.');
     process.exit(1);
   }
 
