@@ -13,6 +13,10 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || '/home/jupyter-tj/projects'; //
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.MANAGER_API_TOKEN || null;
 
+// Auto port assignment configuration
+const AUTO_PORT_RANGE_START = parseInt(process.env.AUTO_PORT_START) || 8000;
+const AUTO_PORT_RANGE_END = parseInt(process.env.AUTO_PORT_END) || 9000;
+
 // Process registry
 const processes = new Map();
 const processLogs = new Map();
@@ -145,6 +149,63 @@ function getPrimaryIpAddress() {
   }
 
   return 'localhost';
+}
+
+// Port management for auto-assignment
+function getUsedPorts() {
+  const usedPorts = new Set();
+
+  // Add the manager's own port
+  usedPorts.add(parseInt(PORT));
+
+  // Get all ports from running programs and config
+  const config = loadConfig();
+  config.programs.forEach(program => {
+    if (program.env && program.env.PORT) {
+      usedPorts.add(parseInt(program.env.PORT));
+    }
+  });
+
+  return usedPorts;
+}
+
+function isPortAvailable(port) {
+  const usedPorts = getUsedPorts();
+  return !usedPorts.has(port);
+}
+
+function findAvailablePort() {
+  const usedPorts = getUsedPorts();
+
+  for (let port = AUTO_PORT_RANGE_START; port <= AUTO_PORT_RANGE_END; port++) {
+    if (!usedPorts.has(port)) {
+      return port;
+    }
+  }
+
+  throw new Error(`No available ports in range ${AUTO_PORT_RANGE_START}-${AUTO_PORT_RANGE_END}`);
+}
+
+function saveConfig(config) {
+  try {
+    // Backup existing config
+    if (fs.existsSync(CONFIG_FILE)) {
+      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
+      fs.copyFileSync(CONFIG_FILE, backupFile);
+    }
+
+    // Save updated config
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+
+    // Clear cache to force reload
+    cachedConfig = null;
+    cachedConfigMtimeMs = null;
+
+    return true;
+  } catch (err) {
+    console.error('[manager] Failed to save config:', err.message);
+    return false;
+  }
 }
 
 // Program management
@@ -391,10 +452,42 @@ function startProgram(programId, config) {
 
   console.log(`[manager] Starting ${programId} using ${path.basename(startScript)} with ${shell}`);
 
+  // Auto-assign port if not configured
+  let assignedPort = null;
+  if (!program.env.PORT) {
+    try {
+      assignedPort = findAvailablePort();
+      program.env.PORT = assignedPort.toString();
+
+      console.log(`[manager] Auto-assigned port ${assignedPort} to ${programId}`);
+
+      // Save the assigned port to config for persistence
+      const updatedConfig = loadConfig();
+      const programIndex = updatedConfig.programs.findIndex(p => p.id === programId);
+      if (programIndex !== -1) {
+        updatedConfig.programs[programIndex].env.PORT = assignedPort.toString();
+        saveConfig(updatedConfig);
+      }
+    } catch (err) {
+      console.error(`[manager] Failed to auto-assign port: ${err.message}`);
+      throw err;
+    }
+  }
+
   const env = {
     ...process.env,
     ...program.env
   };
+
+  // Generate URL for the program
+  const hostname = (config && config.hostname && config.hostname !== 'auto')
+    ? config.hostname
+    : getPrimaryIpAddress();
+  const programUrl = program.url || (program.env.PORT ? `http://${hostname}:${program.env.PORT}` : null);
+
+  if (programUrl) {
+    console.log(`[manager] Program URL: ${programUrl}`);
+  }
 
   const proc = spawn(shell, shellArgs, {
     cwd: program.path,
@@ -445,7 +538,10 @@ function startProgram(programId, config) {
     id: programId,
     name: program.name,
     status: 'running',
-    pid: proc.pid
+    pid: proc.pid,
+    port: program.env.PORT || null,
+    url: programUrl,
+    autoAssignedPort: assignedPort !== null
   };
 }
 
