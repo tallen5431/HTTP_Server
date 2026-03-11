@@ -338,8 +338,9 @@ function updateProgramCard(card, program) {
   const nameElement = card.querySelector('.program-name');
 
   // Make program name clickable if URL exists
-  if (program.url) {
-    nameElement.innerHTML = `<a href="${program.url}" target="_blank" rel="noopener noreferrer" class="program-name-link">${program.name}</a>`;
+  const resolvedNameUrl = resolveProgramUrl(program.url);
+  if (resolvedNameUrl) {
+    nameElement.innerHTML = `<a href="${resolvedNameUrl}" target="_blank" rel="noopener noreferrer" class="program-name-link">${program.name}</a>`;
   } else {
     nameElement.textContent = program.name;
   }

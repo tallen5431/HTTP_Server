@@ -169,7 +169,10 @@ function getProgramStatus(programId, config) {
   }
 
   const proc = processes.get(programId);
-  const isRunning = proc && !proc.killed;
+  // proc.killed is only true when Node sent the signal; a process that exited
+  // on its own still has killed===false until the exit event fires.  Check
+  // exitCode and signalCode as well so the status is accurate.
+  const isRunning = proc && !proc.killed && proc.exitCode === null && proc.signalCode === null;
 
   return {
     id: program.id,
@@ -190,10 +193,13 @@ function generateProgramUrl(program, config) {
   // Otherwise, attempt to generate from PORT
   const port = program.env && (program.env.PORT || program.env.port);
   if (port) {
-    // Use configured hostname or auto-detected IP
+    // When hostname is 'auto' (or unset), use 'localhost' so the browser-side
+    // resolveProgramUrl() can substitute the actual hostname the user used to
+    // reach the manager.  Using a server-detected IP here would break access
+    // from any network path that doesn't match that IP (NAT, VPN, proxies, etc.)
     const hostname = (config && config.hostname && config.hostname !== 'auto')
       ? config.hostname
-      : getPrimaryIpAddress();
+      : 'localhost';
     return `http://${hostname}:${port}`;
   }
 
@@ -287,17 +293,36 @@ app.post('/api/programs/:id/restart', requireApiToken, (req, res) => {
     const programId = req.params.id;
     const config = loadConfig();
 
-    stopProgram(programId);
+    const proc = processes.get(programId);
 
-    // Wait a bit for the process to fully exit before restarting
-    setTimeout(() => {
+    const doStart = () => {
       try {
         const result = startProgram(programId, config);
         res.json({ success: true, data: result });
       } catch (startErr) {
         res.status(500).json({ success: false, error: `Restart failed: ${startErr.message}` });
       }
-    }, 1500);
+    };
+
+    if (proc && !proc.killed && proc.exitCode === null && proc.signalCode === null) {
+      // Wait for the process to actually exit before restarting, with a 10 s
+      // safety timeout in case the exit event never fires.
+      const safetyTimer = setTimeout(() => {
+        proc.removeListener('exit', onExit);
+        doStart();
+      }, 10000);
+
+      const onExit = () => {
+        clearTimeout(safetyTimer);
+        doStart();
+      };
+
+      proc.once('exit', onExit);
+      stopProgram(programId);
+    } else {
+      // Not running; just start it.
+      doStart();
+    }
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
@@ -354,7 +379,7 @@ function startProgram(programId, config) {
   const startScript = path.join(program.path, 'Start.sh');
 
   if (!fs.existsSync(startScript)) {
-    console.warn(`Start script not found for program: ${programId}`);
+    throw new Error(`Start script not found: ${startScript}`);
   }
 
   const env = {
