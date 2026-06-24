@@ -7,7 +7,7 @@ const os = require('os');
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 8091);
 const OLLAMA_HOST = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/+$/, '');
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder:7b';
 const MAX_OUTPUT = 12000;
 
 function sendJson(res, status, data) {
@@ -96,22 +96,53 @@ async function readBody(req) {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
 }
 
-async function analyze(prompt, context) {
+async function findInstalledModel(requestedModel) {
+  try {
+    const response = await fetch(`${OLLAMA_HOST}/api/tags`);
+    if (!response.ok) return null;
+    const data = await response.json();
+    const models = Array.isArray(data.models) ? data.models : [];
+    const exact = models.find(model => model.name === requestedModel);
+    if (exact) return exact.name;
+
+    // Ollama model names are tag-sensitive. If the saved manager config says
+    // "qwen2.5-coder" but the installed model is "qwen2.5-coder:7b",
+    // retry with the installed tag so existing cards keep working.
+    const taggedMatch = models.find(model => model.name && model.name.startsWith(`${requestedModel}:`));
+    return taggedMatch ? taggedMatch.name : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function generateWithModel(model, prompt, context) {
   const response = await fetch(`${OLLAMA_HOST}/api/generate`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      model: OLLAMA_MODEL,
+      model,
       stream: false,
       prompt: `${prompt}\n\nSystem context JSON:\n${JSON.stringify(context, null, 2)}`
     })
   });
 
   if (!response.ok) {
-    throw new Error(`Ollama returned HTTP ${response.status}: ${await response.text()}`);
+    const errorText = await response.text();
+    const installedModel = response.status === 404 ? await findInstalledModel(model) : null;
+    if (installedModel && installedModel !== model) {
+      console.log(`Ollama model ${model} was not found; retrying with installed model ${installedModel}`);
+      return generateWithModel(installedModel, prompt, context);
+    }
+
+    throw new Error(`Ollama returned HTTP ${response.status}: ${errorText}. Check OLLAMA_MODEL; Ollama model names include tags such as qwen2.5-coder:7b.`);
   }
 
-  return response.json();
+  const data = await response.json();
+  return model === OLLAMA_MODEL ? data : { ...data, model };
+}
+
+async function analyze(prompt, context) {
+  return generateWithModel(OLLAMA_MODEL, prompt, context);
 }
 
 const server = http.createServer(async (req, res) => {
