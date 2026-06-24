@@ -44,15 +44,28 @@ INDEX_HTML = r"""<!doctype html>
   <style>
     body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.5; background: #f7f7fb; color: #222; }
     main { max-width: 760px; margin: auto; background: white; border-radius: 16px; padding: 2rem; box-shadow: 0 8px 30px #0001; }
-    button { padding: .7rem 1.5rem; border: 0; border-radius: 8px; color: white; cursor: pointer; font-size: 1rem; margin-block: .5rem; }
+    button { padding: .6rem 1.2rem; border: 0; border-radius: 8px; color: white; cursor: pointer; font-size: .95rem; margin: .25rem; }
     #startBtn  { background: #16a34a; }
     #stopBtn   { background: #dc2626; display: none; }
     .file-btn  { background: #2563eb; }
-    pre { white-space: pre-wrap; background: #111827; color: #f9fafb; padding: 1rem; border-radius: 8px; min-height: 5rem; }
-    .hint { color: #4b5563; font-size: .9rem; }
-    .warn { color: #92400e; background: #fef3c7; border-radius: 8px; padding: .75rem 1rem; font-size: .9rem; display: none; margin-bottom: 1rem; }
+    .tool-btn  { background: #4b5563; font-size: .85rem; padding: .4rem .9rem; }
+    .tool-btn:active { background: #374151; }
+    .toolbar   { display: flex; flex-wrap: wrap; gap: .25rem; margin: .5rem 0 .75rem; }
+    pre {
+      white-space: pre-wrap; background: #111827; color: #f9fafb;
+      padding: 1rem; border-radius: 8px; min-height: 6rem;
+      max-height: 40vh; overflow-y: auto; font-size: .95rem;
+    }
+    .hint  { color: #4b5563; font-size: .9rem; }
+    .warn  { color: #92400e; background: #fef3c7; border-radius: 8px; padding: .75rem 1rem; font-size: .9rem; display: none; margin-bottom: 1rem; }
+    .toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: #1f2937; color: #f9fafb;
+             padding: .6rem 1.2rem; border-radius: 8px; font-size: .9rem;
+             opacity: 0; transition: opacity .25s; pointer-events: none; }
+    .toast.show { opacity: 1; }
     .section { border-top: 1px solid #e5e7eb; margin-top: 1.5rem; padding-top: 1.5rem; }
+    .row { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
     #statusLine { color: #6b7280; font-size: .9rem; min-height: 1.4em; }
+    #wordCount  { color: #9ca3af; font-size: .8rem; font-weight: normal; margin-left: .5rem; }
     input[type=file] { display: block; margin-block: .75rem; }
   </style>
 </head>
@@ -68,9 +81,17 @@ INDEX_HTML = r"""<!doctype html>
   <h2>Live Microphone</h2>
   <p class="hint">Streams audio from your microphone and transcribes in real-time.</p>
   <p id="statusLine">Ready</p>
-  <button id="startBtn">🎙️ Start Recording</button>
-  <button id="stopBtn">⏹ Stop</button>
-  <h3>Live Transcript</h3>
+  <div class="row">
+    <button id="startBtn">🎙️ Start Recording</button>
+    <button id="stopBtn">⏹ Stop</button>
+  </div>
+
+  <h3>Live Transcript <span id="wordCount"></span></h3>
+  <div class="toolbar">
+    <button class="tool-btn" id="copyBtn">📋 Copy</button>
+    <button class="tool-btn" id="clearBtn">🗑️ Clear</button>
+    <button class="tool-btn" id="downloadBtn">⬇️ Download</button>
+  </div>
   <pre id="liveResult">Press Start to begin…</pre>
 
   <div class="section">
@@ -80,18 +101,49 @@ INDEX_HTML = r"""<!doctype html>
       <input id="audio" name="audio" type="file" accept="audio/wav,.wav" required>
       <button type="submit" class="file-btn">Transcribe File</button>
     </form>
+    <div class="toolbar">
+      <button class="tool-btn" id="copyFileBtn">📋 Copy</button>
+      <button class="tool-btn" id="downloadFileBtn">⬇️ Download</button>
+    </div>
     <h3>Result</h3>
     <pre id="fileResult">Waiting for audio…</pre>
   </div>
 </main>
+<div class="toast" id="toast"></div>
 <script>
 if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
   document.getElementById('httpsWarn').style.display = 'block';
 }
 
-// File upload
-const uploadForm = document.getElementById('uploadForm');
-const fileResult = document.getElementById('fileResult');
+// ── Toast ────────────────────────────────────────────────────────
+const toast = document.getElementById('toast');
+let toastTimer;
+function showToast(msg) {
+  toast.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+}
+
+// ── Helpers ──────────────────────────────────────────────────────
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => showToast('Copied!'));
+}
+function downloadText(text, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+function updateWordCount(text) {
+  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+  document.getElementById('wordCount').textContent = words ? `(${words} words)` : '';
+}
+
+// ── File upload ──────────────────────────────────────────────────
+const uploadForm   = document.getElementById('uploadForm');
+const fileResult   = document.getElementById('fileResult');
 uploadForm.addEventListener('submit', async e => {
   e.preventDefault();
   fileResult.textContent = 'Transcribing…';
@@ -99,8 +151,11 @@ uploadForm.addEventListener('submit', async e => {
   const p = await r.json();
   fileResult.textContent = p.text || p.error || JSON.stringify(p, null, 2);
 });
+document.getElementById('copyFileBtn').addEventListener('click', () => copyText(fileResult.textContent));
+document.getElementById('downloadFileBtn').addEventListener('click', () =>
+  downloadText(fileResult.textContent, `transcript-${Date.now()}.txt`));
 
-// Live mic
+// ── Live mic ─────────────────────────────────────────────────────
 const startBtn   = document.getElementById('startBtn');
 const stopBtn    = document.getElementById('stopBtn');
 const liveResult = document.getElementById('liveResult');
@@ -108,6 +163,12 @@ const statusLine = document.getElementById('statusLine');
 let ws, audioCtx, source, processor, stream;
 
 function setStatus(msg) { statusLine.textContent = msg; }
+
+function setTranscript(text) {
+  liveResult.textContent = text;
+  liveResult.scrollTop = liveResult.scrollHeight;
+  updateWordCount(text);
+}
 
 startBtn.addEventListener('click', async () => {
   try {
@@ -138,7 +199,7 @@ startBtn.addEventListener('click', async () => {
     source.connect(processor);
     processor.connect(audioCtx.destination);
     liveResult.dataset.confirmed = '';
-    liveResult.textContent = '';
+    setTranscript('');
     setStatus('🔴 Recording…');
     startBtn.style.display = 'none';
     stopBtn.style.display  = 'inline-block';
@@ -148,10 +209,10 @@ startBtn.addEventListener('click', async () => {
     const msg = JSON.parse(e.data);
     const confirmed = liveResult.dataset.confirmed || '';
     if (msg.partial) {
-      liveResult.textContent = confirmed + (confirmed ? ' ' : '') + msg.partial + '…';
+      setTranscript(confirmed + (confirmed ? ' ' : '') + msg.partial + '…');
     } else if (msg.text) {
       liveResult.dataset.confirmed = confirmed + (confirmed ? ' ' : '') + msg.text;
-      liveResult.textContent = liveResult.dataset.confirmed;
+      setTranscript(liveResult.dataset.confirmed);
     }
   };
 
@@ -170,6 +231,19 @@ function stopRecording() {
   startBtn.style.display = 'inline-block';
   stopBtn.style.display  = 'none';
 }
+
+document.getElementById('copyBtn').addEventListener('click', () =>
+  copyText(liveResult.dataset.confirmed || liveResult.textContent));
+
+document.getElementById('clearBtn').addEventListener('click', () => {
+  liveResult.dataset.confirmed = '';
+  setTranscript('');
+  showToast('Cleared');
+});
+
+document.getElementById('downloadBtn').addEventListener('click', () =>
+  downloadText(liveResult.dataset.confirmed || liveResult.textContent,
+               `transcript-${Date.now()}.txt`));
 </script>
 </body>
 </html>
