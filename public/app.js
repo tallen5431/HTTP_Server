@@ -279,7 +279,8 @@ function createProgramCard(program) {
 
   // Add click handler for Open button
   btnOpen.addEventListener('click', () => {
-    const targetUrl = resolveProgramUrl(program.url);
+    const currentProgram = currentPrograms.find(p => p.id === program.id) || program;
+    const targetUrl = resolveProgramUrl(currentProgram.url);
     if (targetUrl) {
       window.open(targetUrl, '_blank');
     }
@@ -337,9 +338,18 @@ function createProgramCard(program) {
 function updateProgramCard(card, program) {
   const nameElement = card.querySelector('.program-name');
 
+  const resolvedUrl = resolveProgramUrl(program.url);
+
   // Make program name clickable if URL exists
-  if (program.url) {
-    nameElement.innerHTML = `<a href="${program.url}" target="_blank" rel="noopener noreferrer" class="program-name-link">${program.name}</a>`;
+  if (resolvedUrl) {
+    nameElement.innerHTML = '';
+    const nameLink = document.createElement('a');
+    nameLink.href = resolvedUrl;
+    nameLink.target = '_blank';
+    nameLink.rel = 'noopener noreferrer';
+    nameLink.className = 'program-name-link';
+    nameLink.textContent = program.name;
+    nameElement.appendChild(nameLink);
   } else {
     nameElement.textContent = program.name;
   }
@@ -361,8 +371,6 @@ function updateProgramCard(card, program) {
   const urlRow = card.querySelector('.program-url-row');
   const urlLink = card.querySelector('.program-url');
   const btnOpen = card.querySelector('.btn-open');
-
-  const resolvedUrl = resolveProgramUrl(program.url);
 
   if (resolvedUrl) {
     urlRow.classList.remove('hidden');

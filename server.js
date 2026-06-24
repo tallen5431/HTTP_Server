@@ -3,7 +3,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const express = require('express');
 const WebSocket = require('ws');
 
@@ -24,6 +24,9 @@ function getBundledVoskTranscriberProgram() {
       PORT: '8090',
       VOSK_MODEL_PATH: path.join(programPath, 'model')
     },
+    urlProtocol: 'https',
+    preferTailscale: true,
+    omitPortInUrl: true,
     comment: 'Bundled sample card for local voice transcription with a Vosk model. Install requirements and place a model at VOSK_MODEL_PATH before starting.'
   };
 }
@@ -135,6 +138,31 @@ function validateConfig(config) {
   return true;
 }
 
+// Get the current machine's Tailscale HTTPS hostname when available.
+function getTailscaleHostname(config) {
+  const configuredHostname = config && (config.tailscaleHostname || config.tailscaleHost);
+  if (configuredHostname && configuredHostname !== 'auto') {
+    return String(configuredHostname).replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  }
+
+  const envHostname = process.env.TAILSCALE_HOSTNAME || process.env.TS_CERT_DOMAIN;
+  if (envHostname) {
+    return envHostname.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  }
+
+  try {
+    const status = JSON.parse(execSync('tailscale status --json', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+    const dnsName = status && status.Self && status.Self.DNSName;
+    if (dnsName) {
+      return dnsName.replace(/\.$/, '');
+    }
+  } catch (err) {
+    // Tailscale is optional; fall back to the normal hostname/IP path below.
+  }
+
+  return null;
+}
+
 // Get primary network IP address
 function getPrimaryIpAddress() {
   const { networkInterfaces } = require('os');
@@ -208,11 +236,24 @@ function generateProgramUrl(program, config) {
   // Otherwise, attempt to generate from PORT
   const port = program.env && (program.env.PORT || program.env.port);
   if (port) {
-    // Use configured hostname or auto-detected IP
-    const hostname = (config && config.hostname && config.hostname !== 'auto')
-      ? config.hostname
-      : getPrimaryIpAddress();
-    return `http://${hostname}:${port}`;
+    const protocol = program.urlProtocol || (config && config.urlProtocol) || 'http';
+    const preferTailscale = program.preferTailscale || (config && config.preferTailscale);
+    const programHostname = program.hostname || program.host;
+    const configuredHostname = programHostname || (config && config.hostname);
+    const tailscaleHostname = preferTailscale ? getTailscaleHostname(config) : null;
+
+    // Use program/config hostname when provided, otherwise prefer the Tailscale
+    // MagicDNS hostname for programs marked for Tailscale HTTPS, then fall back
+    // to the primary local/LAN address.
+    const hostname = (configuredHostname && configuredHostname !== 'auto')
+      ? configuredHostname
+      : (tailscaleHostname || getPrimaryIpAddress());
+
+    const cleanHostname = String(hostname).replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    const shouldOmitPort = Boolean(program.omitPortInUrl || (config && config.omitPortInUrl));
+    const portSegment = shouldOmitPort ? '' : `:${port}`;
+
+    return `${protocol}://${cleanHostname}${portSegment}`;
   }
 
   return null;

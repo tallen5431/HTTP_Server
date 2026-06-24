@@ -49,7 +49,10 @@
         "PORT": "8090",
         "VOSK_MODEL_PATH": "/workspace/HTTP_Server/examples/vosk-transcriber/model"
       },
-      "comment": "Bundled sample program card for transcribing WAV audio with a local Vosk model. Install examples/vosk-transcriber/requirements.txt and place a model at VOSK_MODEL_PATH."
+      "comment": "Bundled sample program card for transcribing WAV audio with a local Vosk model. URL auto-generates as an HTTPS Tailscale URL when a Tailscale hostname is available. Install examples/vosk-transcriber/requirements.txt and place a model at VOSK_MODEL_PATH.",
+      "urlProtocol": "https",
+      "preferTailscale": true,
+      "omitPortInUrl": true
     }
   ]
 }

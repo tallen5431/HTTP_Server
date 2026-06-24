@@ -127,6 +127,8 @@ At the root level of `config.json`, you can optionally specify a hostname for UR
 - **hostname**: Hostname to use for auto-generated program URLs (optional)
   - `"auto"` (default): Automatically detects the server's primary network IP address
   - Specific IP/hostname: Use a custom value (e.g., `"192.168.1.100"` or `"myserver.local"`)
+- **tailscaleHostname**: Optional Tailscale MagicDNS hostname for HTTPS program URLs (for example, `"my-host.my-tailnet.ts.net"`). When omitted, programs with `preferTailscale: true` try `TAILSCALE_HOSTNAME`, `TS_CERT_DOMAIN`, then `tailscale status --json`.
+- **urlProtocol**: Default protocol for generated program URLs (defaults to `"http"`).
 
 The hostname is used when auto-generating URLs from PORT environment variables. The manager intelligently detects your server's network IP (prioritizing eth0, en0, wlan0) so that URLs work whether you access the manager from:
 - The local machine: `http://localhost:3000`
@@ -144,6 +146,10 @@ Each program in the `programs` array has the following fields:
 - **url** (optional): Manual URL override
   - If not provided, automatically generated from `PORT` environment variable
   - Useful for external domains or custom configurations
+- **urlProtocol** (optional): Per-program protocol for generated URLs, such as `"https"`.
+- **hostname** (optional): Per-program hostname override.
+- **preferTailscale** (optional): When `true`, generated URLs prefer the configured/detected Tailscale MagicDNS hostname.
+- **omitPortInUrl** (optional): When `true`, generated URLs omit `:PORT`; useful for Tailscale Serve HTTPS endpoints that proxy port 443 to the local app.
 
 ### Environment Variables
 
@@ -198,9 +204,9 @@ Before starting the card:
    python3 -m pip install -r examples/vosk-transcriber/requirements.txt
    ```
 2. Download and unpack a Vosk speech model into `examples/vosk-transcriber/model`, or set `VOSK_MODEL_PATH` to another unpacked model directory.
-3. Start the card and open `http://YOUR_IP:8090` to upload a mono PCM WAV file for transcription.
+3. Start the card and open the generated HTTPS Tailscale URL to upload a mono PCM WAV file for transcription.
 
-The bundled app defaults to `HOST=0.0.0.0` and `PORT=8090`, so it can be reached from other machines when your firewall allows the port.
+The bundled app defaults to `HOST=0.0.0.0` and `PORT=8090`. Its manager card uses `urlProtocol: "https"`, `preferTailscale: true`, and `omitPortInUrl: true`, so it displays a Tailscale Serve-style URL such as `https://your-machine.your-tailnet.ts.net` when a Tailscale hostname is configured or detectable. Set `tailscaleHostname` in `config.json` or `TAILSCALE_HOSTNAME` in the manager environment if the `tailscale` CLI is unavailable.
 
 ## API Endpoints
 
