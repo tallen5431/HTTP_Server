@@ -7,31 +7,67 @@ let searchQuery = '';
 // Resolve a program URL against the current browser origin.
 //
 // Supports:
-//   - Absolute URLs: "http://example.com/app" (returned as-is)
+//   - Absolute URLs: "http://example.com/app" (returned as-is unless it points at a local/private host)
 //   - Root-relative paths: "/myapp" (origin + path)
 //   - Simple paths: "myapp" (origin + "/" + path)
-function resolveProgramUrl(rawUrl) {
+function isLocalProgramHostname(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return host === 'localhost' ||
+    host === '0.0.0.0' ||
+    host === '::1' ||
+    host.startsWith('127.') ||
+    host.startsWith('10.') ||
+    host.startsWith('100.') ||
+    host.startsWith('192.168.') ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+}
+
+function isTailscaleHostname(hostname) {
+  return /\.ts\.net$/i.test(String(hostname || ''));
+}
+
+function resolveProgramUrl(rawUrl, program = {}) {
   if (!rawUrl) return null;
   const trimmed = String(rawUrl).trim();
   if (!trimmed) return null;
 
   const loc = window.location || {};
   const currentHostname = loc.hostname || 'localhost';
-
-  // If this already looks like an absolute http(s) URL, check if we need to rewrite localhost
-  if (/^https?:\/\//i.test(trimmed)) {
-    // Replace localhost or 127.0.0.1 with the actual hostname used to access this page
-    // This ensures URLs work from remote clients accessing the manager
-    return trimmed
-      .replace(/localhost/g, currentHostname)
-      .replace(/127\.0\.0\.1/g, currentHostname);
-  }
-
-  const protocol = loc.protocol || 'http:';
+  const currentProtocol = loc.protocol || 'http:';
   const currentPort = loc.port || '';
 
+  // If the API returns a local/private address but the manager page is being
+  // viewed through HTTPS Tailscale, rewrite the card link to that public
+  // Tailscale host so users do not see or open unreachable local IP URLs.
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      if (isLocalProgramHostname(url.hostname) && isTailscaleHostname(currentHostname)) {
+        url.protocol = currentProtocol === 'https:' ? 'https:' : url.protocol;
+        url.hostname = currentHostname;
+
+        if (program.omitPortInUrl || (program.id === 'vosk-transcriber' && url.protocol === 'https:')) {
+          url.port = '';
+        }
+
+        return url.toString().replace(/\/$/, '');
+      }
+
+      if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
+        url.hostname = currentHostname;
+        return url.toString().replace(/\/$/, '');
+      }
+
+      return trimmed;
+    } catch (err) {
+      return trimmed
+        .replace(/localhost/g, currentHostname)
+        .replace(/127\.0\.0\.1/g, currentHostname);
+    }
+  }
+
   const portSegment = currentPort ? `:${currentPort}` : '';
-  const origin = `${protocol}//${currentHostname}${portSegment}`;
+  const origin = `${currentProtocol}//${currentHostname}${portSegment}`;
 
   // "/myapp" -> origin + path
   if (trimmed.startsWith('/')) {
@@ -280,7 +316,7 @@ function createProgramCard(program) {
   // Add click handler for Open button
   btnOpen.addEventListener('click', () => {
     const currentProgram = currentPrograms.find(p => p.id === program.id) || program;
-    const targetUrl = resolveProgramUrl(currentProgram.url);
+    const targetUrl = resolveProgramUrl(currentProgram.url, currentProgram);
     if (targetUrl) {
       window.open(targetUrl, '_blank');
     }
@@ -338,7 +374,7 @@ function createProgramCard(program) {
 function updateProgramCard(card, program) {
   const nameElement = card.querySelector('.program-name');
 
-  const resolvedUrl = resolveProgramUrl(program.url);
+  const resolvedUrl = resolveProgramUrl(program.url, program);
 
   // Make program name clickable if URL exists
   if (resolvedUrl) {

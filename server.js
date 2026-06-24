@@ -97,6 +97,26 @@ function loadConfig() {
   }
 }
 
+
+function isVoskProgram(program) {
+  return program && (
+    program.id === 'vosk-transcriber' ||
+    /vosk/i.test(program.name || '') ||
+    /vosk-transcriber/.test(program.path || '')
+  );
+}
+
+function applyDefaultProgramUrlOptions(program) {
+  // Keep existing user-provided values, but make legacy Vosk entries generate
+  // the intended Tailscale HTTPS card URL even when config.json predates these
+  // options and was not copied from config.example.json.
+  if (isVoskProgram(program) && !program.url) {
+    if (program.urlProtocol === undefined) program.urlProtocol = 'https';
+    if (program.preferTailscale === undefined) program.preferTailscale = true;
+    if (program.omitPortInUrl === undefined) program.omitPortInUrl = true;
+  }
+}
+
 // Validate configuration
 function validateConfig(config) {
   if (!config.programs || !Array.isArray(config.programs)) {
@@ -133,6 +153,8 @@ function validateConfig(config) {
       console.warn(`Program "${program.id}" has a non-string url; this will be ignored.`);
       delete program.url;
     }
+
+    applyDefaultProgramUrlOptions(program);
   });
 
   return true;
