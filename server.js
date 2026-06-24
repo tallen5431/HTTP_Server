@@ -31,6 +31,39 @@ function getBundledVoskTranscriberProgram() {
   };
 }
 
+function getBundledQwenSystemAssistantProgram() {
+  const programPath = path.join(__dirname, 'examples', 'qwen-system-assistant');
+  return {
+    id: 'qwen-system-assistant',
+    name: 'Qwen System Assistant',
+    path: programPath,
+    env: {
+      HOST: '0.0.0.0',
+      PORT: '8091',
+      OLLAMA_HOST: 'http://127.0.0.1:11434',
+      OLLAMA_MODEL: 'qwen2.5-coder'
+    },
+    comment: 'Bundled local AI assistant card. Connects to Ollama qwen2.5-coder and gathers read-only Linux system context for analysis.'
+  };
+}
+
+function isQwenSystemAssistantProgram(program) {
+  return program && (
+    program.id === 'qwen-system-assistant' ||
+    /qwen system assistant/i.test(program.name || '') ||
+    /qwen-system-assistant/.test(program.path || '')
+  );
+}
+
+function ensureBundledPrograms(config) {
+  if (!config.programs.some(program => isVoskProgram(program))) {
+    config.programs.push(getBundledVoskTranscriberProgram());
+  }
+  if (!config.programs.some(program => isQwenSystemAssistantProgram(program))) {
+    config.programs.push(getBundledQwenSystemAssistantProgram());
+  }
+  return config;
+}
 
 function ensureBundledVoskProgram(config) {
   if (!config.programs.some(program => isVoskProgram(program))) {
@@ -96,7 +129,7 @@ function loadConfig() {
         try {
           const { discoverProjects, generateConfig } = require('./discover-projects');
           const projects = discoverProjects(PROJECTS_DIR);
-          const autoConfig = ensureBundledVoskProgram(generateConfig(projects));
+          const autoConfig = ensureBundledPrograms(generateConfig(projects));
 
           // Save the auto-generated config
           fs.writeFileSync(CONFIG_FILE, JSON.stringify(autoConfig, null, 2), 'utf8');
@@ -114,7 +147,7 @@ function loadConfig() {
       // Fallback default config so the UI can still start.
       const defaultConfig = {
         hostname: 'auto',
-        programs: [getBundledVoskTranscriberProgram()]
+        programs: [getBundledVoskTranscriberProgram(), getBundledQwenSystemAssistantProgram()]
       };
       cachedConfig = defaultConfig;
       cachedConfigMtimeMs = null;
@@ -124,7 +157,7 @@ function loadConfig() {
     const stats = fs.statSync(CONFIG_FILE);
     if (!cachedConfig || stats.mtimeMs !== cachedConfigMtimeMs) {
       const data = fs.readFileSync(CONFIG_FILE, 'utf8');
-      const config = JSON.parse(data);
+      const config = ensureBundledPrograms(JSON.parse(data));
       validateConfig(config);
       cachedConfig = config;
       cachedConfigMtimeMs = stats.mtimeMs;
@@ -717,7 +750,7 @@ app.post('/api/rediscover', requireApiToken, (req, res) => {
     // Run discovery
     const { discoverProjects, generateConfig } = require('./discover-projects');
     const projects = discoverProjects(projectsDir);
-    const newConfig = ensureBundledVoskProgram(
+    const newConfig = ensureBundledPrograms(
       preserveExistingProgramUrlOptions(generateConfig(projects), existingConfig)
     );
     validateConfig(newConfig);
