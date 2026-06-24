@@ -9,7 +9,7 @@ const os = require('os');
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 8091);
 const OLLAMA_HOST = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/+$/, '');
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder:7b';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder:3b';
 const MAX_OUTPUT = 12000;
 const MAX_FILE_SCAN_DEPTH = 8;
 const MAX_FILE_SCAN_ENTRIES = 500;
@@ -240,7 +240,7 @@ async function findInstalledModel(requestedModel) {
     if (exact) return exact.name;
 
     // Ollama model names are tag-sensitive. If the saved manager config says
-    // "qwen2.5-coder" but the installed model is "qwen2.5-coder:7b",
+    // "qwen2.5-coder" but the installed model is "qwen2.5-coder:3b",
     // retry with the installed tag so existing cards keep working.
     const taggedMatch = models.find(model => model.name && model.name.startsWith(`${requestedModel}:`));
     return taggedMatch ? taggedMatch.name : null;
@@ -268,7 +268,7 @@ async function generateWithModel(model, prompt, context) {
       return generateWithModel(installedModel, prompt, context);
     }
 
-    throw new Error(`Ollama returned HTTP ${response.status}: ${errorText}. Check OLLAMA_MODEL; Ollama model names include tags such as qwen2.5-coder:7b.`);
+    throw new Error(`Ollama returned HTTP ${response.status}: ${errorText}. Check OLLAMA_MODEL; Ollama model names include tags such as qwen2.5-coder:3b.`);
   }
 
   const data = await response.json();
