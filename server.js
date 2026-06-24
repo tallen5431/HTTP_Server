@@ -187,7 +187,7 @@ function getProgramStatus(programId, config) {
   }
 
   const proc = processes.get(programId);
-  const isRunning = proc && !proc.killed;
+  const isRunning = proc && proc.isRunning;
 
   return {
     id: program.id,
@@ -362,10 +362,10 @@ function startProgram(programId, config) {
   const program = getProgramConfig(programId, config);
   const existingProcess = processes.get(programId);
 
-  // Clean up killed processes before starting
-  if (existingProcess && existingProcess.killed) {
+  // Clean up exited processes before starting
+  if (existingProcess && !existingProcess.isRunning) {
     processes.delete(programId);
-  } else if (existingProcess && !existingProcess.killed) {
+  } else if (existingProcess && existingProcess.isRunning) {
     throw new Error('Program is already running');
   }
 
@@ -414,13 +414,16 @@ function startProgram(programId, config) {
     const line = `[system] Process exited with code ${code}`;
     logs.push({ time: new Date().toISOString(), text: line });
 
-    // Clean up the process from the registry
+    // Mark as no longer running and clean up the registry
+    proc.isRunning = false;
     processes.delete(programId);
 
     broadcastStatus();
   });
 
-  // Track spawn time for uptime calculation
+  // Track liveness explicitly (proc.killed only reflects signal delivery,
+  // not actual process exit) and spawn time for uptime calculation.
+  proc.isRunning = true;
   proc.spawnDate = Date.now();
 
   processes.set(programId, proc);
@@ -435,15 +438,15 @@ function startProgram(programId, config) {
 
 function stopProgram(programId) {
   const proc = processes.get(programId);
-  if (!proc || proc.killed) {
+  if (!proc || !proc.isRunning) {
     throw new Error('Program is not running');
   }
 
   proc.kill('SIGTERM');
 
-  // Force kill after 10 seconds if still running
+  // Force kill after 10 seconds if it hasn't exited yet
   setTimeout(() => {
-    if (!proc.killed) {
+    if (proc.isRunning) {
       proc.kill('SIGKILL');
     }
   }, 10000);
@@ -670,7 +673,7 @@ app.delete('/api/programs/:id', requireApiToken, (req, res) => {
 
     // Stop the program if it's running
     const proc = processes.get(programId);
-    if (proc && !proc.killed) {
+    if (proc && proc.isRunning) {
       console.log(`[manager] Stopping program before removal: ${programId}`);
       proc.kill('SIGTERM');
     }
@@ -786,7 +789,7 @@ async function startServer() {
 
     // Kill all running child processes
     for (const [id, proc] of processes.entries()) {
-      if (!proc.killed) {
+      if (proc.isRunning) {
         console.log(`Stopping ${id}...`);
         proc.kill('SIGTERM');
       }
