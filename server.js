@@ -31,10 +31,30 @@ function getBundledVoskTranscriberProgram() {
   };
 }
 
+function getBundledCodeSmithProgram() {
+  const programPath = path.join(__dirname, 'examples', 'codesmith');
+  return {
+    id: 'codesmith',
+    name: 'CodeSmith',
+    path: programPath,
+    env: {
+      HOST: '0.0.0.0',
+      PORT: '8050',
+      CODESMITH_LLM_BASE_URL: process.env.CODESMITH_LLM_BASE_URL || 'http://100.98.112.1:11434/v1',
+      CODESMITH_LLM_API_KEY: process.env.CODESMITH_LLM_API_KEY || 'not-needed',
+      CODESMITH_LLM_MODEL: process.env.CODESMITH_LLM_MODEL || 'qwen2.5-coder:7b'
+    },
+    comment: 'AI-assisted code modification UI. Start.sh auto-pulls the latest CodeSmith from GitHub. Set CODESMITH_LLM_BASE_URL to your Ollama endpoint (default: desktop-glpggos via Tailscale).'
+  };
+}
+
 
 function ensureBundledVoskProgram(config) {
   if (!config.programs.some(program => isVoskProgram(program))) {
     config.programs.push(getBundledVoskTranscriberProgram());
+  }
+  if (!config.programs.some(program => isCodeSmithProgram(program))) {
+    config.programs.push(getBundledCodeSmithProgram());
   }
   return config;
 }
@@ -66,7 +86,8 @@ function preserveExistingProgramUrlOptions(newConfig, existingConfig) {
   for (const newProgram of newConfig.programs) {
     const existingProgram = existingConfig.programs.find(program =>
       program.id === newProgram.id ||
-      (isVoskProgram(program) && isVoskProgram(newProgram))
+      (isVoskProgram(program) && isVoskProgram(newProgram)) ||
+      (isCodeSmithProgram(program) && isCodeSmithProgram(newProgram))
     );
     mergeExistingProgramUrlOptions(newProgram, existingProgram);
   }
@@ -143,6 +164,14 @@ function isVoskProgram(program) {
     program.id === 'vosk-transcriber' ||
     /vosk/i.test(program.name || '') ||
     /vosk-transcriber/.test(program.path || '')
+  );
+}
+
+function isCodeSmithProgram(program) {
+  return program && (
+    program.id === 'codesmith' ||
+    /^codesmith$/i.test(program.name || '') ||
+    /[/\\]codesmith([/\\]|$)/.test(program.path || '')
   );
 }
 
