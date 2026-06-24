@@ -284,6 +284,16 @@ function getProgramConfig(programId, config) {
   return program;
 }
 
+
+function isLoopbackHostname(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return host === 'localhost' || host === '0.0.0.0' || host === '::1' || host.startsWith('127.');
+}
+
+function isTailscaleDnsHostname(hostname) {
+  return /\.ts\.net$/i.test(String(hostname || ''));
+}
+
 function getProgramStatus(programId, config, urlContext = null) {
   const program = config.programs.find(p => p.id === programId);
   if (!program) {
@@ -330,7 +340,10 @@ function generateProgramUrl(program, config, runtimePort = null, urlContext = nu
     // use that same host for Tailscale-preferred program cards. This covers
     // systems where the tailscale CLI/env hostname is unavailable to Node and
     // prevents WebSocket status refreshes from reverting cards to local IPs.
-    const requestPublicHostname = preferTailscale && requestHostname && requestHostname !== 'localhost'
+    const requestIsPublicHttps = requestHostname &&
+      !isLoopbackHostname(requestHostname) &&
+      (requestProtocol === 'https' || isTailscaleDnsHostname(requestHostname));
+    const requestPublicHostname = preferTailscale && requestIsPublicHttps
       ? requestHostname
       : null;
 
