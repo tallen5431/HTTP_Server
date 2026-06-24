@@ -140,8 +140,8 @@ function getPrimaryIpAddress() {
   const { networkInterfaces } = require('os');
   const nets = networkInterfaces();
 
-  // Prioritize common network interface names
-  const preferredInterfaces = ['eth0', 'en0', 'wlan0'];
+  // Prioritize Tailscale, then common LAN interfaces
+  const preferredInterfaces = ['tailscale0', 'eth0', 'en0', 'wlan0'];
 
   for (const ifaceName of preferredInterfaces) {
     if (nets[ifaceName]) {
