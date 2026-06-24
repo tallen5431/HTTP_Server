@@ -110,6 +110,8 @@ node discover-projects.js /path/to/your/projects --output my-config.json
 - Enter the projects directory path when prompted (defaults to `/home/jupyter-tj/projects`)
 - Scans the specified directory and regenerates config.json
 - Automatically backs up existing config
+- Preserves existing program URL overrides/options when a rediscovered program matches the old ID
+- Keeps the bundled Vosk card available even when the scanned projects directory is separate from this manager repository
 - All changes take effect immediately
 
 **What Gets Auto-Detected:**

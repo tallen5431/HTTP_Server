@@ -31,6 +31,49 @@ function getBundledVoskTranscriberProgram() {
   };
 }
 
+
+function ensureBundledVoskProgram(config) {
+  if (!config.programs.some(program => isVoskProgram(program))) {
+    config.programs.push(getBundledVoskTranscriberProgram());
+  }
+  return config;
+}
+
+function mergeExistingProgramUrlOptions(newProgram, existingProgram) {
+  if (!existingProgram) return;
+
+  const urlOptionKeys = [
+    'url',
+    'urlProtocol',
+    'hostname',
+    'host',
+    'preferTailscale',
+    'omitPortInUrl'
+  ];
+
+  for (const key of urlOptionKeys) {
+    if (existingProgram[key] !== undefined && newProgram[key] === undefined) {
+      newProgram[key] = existingProgram[key];
+    }
+  }
+}
+
+function preserveExistingProgramUrlOptions(newConfig, existingConfig) {
+  if (!existingConfig || !Array.isArray(existingConfig.programs)) {
+    return newConfig;
+  }
+
+  for (const newProgram of newConfig.programs) {
+    const existingProgram = existingConfig.programs.find(program =>
+      program.id === newProgram.id ||
+      (isVoskProgram(program) && isVoskProgram(newProgram))
+    );
+    mergeExistingProgramUrlOptions(newProgram, existingProgram);
+  }
+
+  return newConfig;
+}
+
 // Process registry
 const processes = new Map();
 const processLogs = new Map();
@@ -53,10 +96,7 @@ function loadConfig() {
         try {
           const { discoverProjects, generateConfig } = require('./discover-projects');
           const projects = discoverProjects(PROJECTS_DIR);
-          const autoConfig = generateConfig(projects);
-          if (!autoConfig.programs.some(program => program.id === 'vosk-transcriber')) {
-            autoConfig.programs.push(getBundledVoskTranscriberProgram());
-          }
+          const autoConfig = ensureBundledVoskProgram(generateConfig(projects));
 
           // Save the auto-generated config
           fs.writeFileSync(CONFIG_FILE, JSON.stringify(autoConfig, null, 2), 'utf8');
@@ -243,20 +283,20 @@ function getProgramStatus(programId, config) {
     id: program.id,
     name: program.name,
     status: isRunning ? 'running' : 'stopped',
-    url: generateProgramUrl(program, config),
+    url: generateProgramUrl(program, config, proc && proc.actualPort),
     pid: isRunning ? proc.pid : null,
     uptime: isRunning && proc.spawnDate ? Date.now() - proc.spawnDate : 0
   };
 }
 
-function generateProgramUrl(program, config) {
+function generateProgramUrl(program, config, runtimePort = null) {
   // If a URL is explicitly provided, use it
   if (program.url) {
     return program.url;
   }
 
   // Otherwise, attempt to generate from PORT
-  const port = program.env && (program.env.PORT || program.env.port);
+  const port = runtimePort || (program.env && (program.env.PORT || program.env.port));
   if (port) {
     const protocol = program.urlProtocol || (config && config.urlProtocol) || 'http';
     const preferTailscale = program.preferTailscale || (config && config.preferTailscale);
@@ -420,6 +460,11 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+function parseListeningPortFromLog(line) {
+  const match = String(line).match(/listening\s+on\s+https?:\/\/[^:\s]+:(\d+)/i);
+  return match ? match[1] : null;
+}
+
 // Start programs and manage processes
 function startProgram(programId, config) {
   const program = getProgramConfig(programId, config);
@@ -455,6 +500,10 @@ function startProgram(programId, config) {
     const lines = data.toString().split('\n').filter(Boolean);
     lines.forEach(line => {
       logs.push({ time: new Date().toISOString(), text: line });
+      const actualPort = parseListeningPortFromLog(line);
+      if (actualPort) {
+        proc.actualPort = actualPort;
+      }
       if (logs.length > 1000) {
         logs.shift();
       }
@@ -541,6 +590,8 @@ app.post('/api/rediscover', requireApiToken, (req, res) => {
       });
     }
 
+    const existingConfig = fs.existsSync(CONFIG_FILE) ? loadConfig() : null;
+
     // Backup existing config
     if (fs.existsSync(CONFIG_FILE)) {
       const backupFile = CONFIG_FILE + '.backup.' + Date.now();
@@ -551,7 +602,10 @@ app.post('/api/rediscover', requireApiToken, (req, res) => {
     // Run discovery
     const { discoverProjects, generateConfig } = require('./discover-projects');
     const projects = discoverProjects(projectsDir);
-    const newConfig = generateConfig(projects);
+    const newConfig = ensureBundledVoskProgram(
+      preserveExistingProgramUrlOptions(generateConfig(projects), existingConfig)
+    );
+    validateConfig(newConfig);
 
     // Save new config
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
