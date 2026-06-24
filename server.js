@@ -359,6 +359,15 @@ function getProgramLogs(programId, lines = 100) {
   return logs.slice(-lines);
 }
 
+function appendProgramLog(programId, text) {
+  const logs = processLogs.get(programId) || [];
+  logs.push({ time: new Date().toISOString(), text });
+  while (logs.length > 1000) {
+    logs.shift();
+  }
+  processLogs.set(programId, logs);
+}
+
 // WebSocket broadcast
 const wsClients = new Set();
 
@@ -419,6 +428,8 @@ app.post('/api/programs/:id/start', requireApiToken, (req, res) => {
     const result = startProgram(req.params.id, config);
     res.json({ success: true, data: result });
   } catch (err) {
+    appendProgramLog(req.params.id, `[system] Start failed: ${err.message}`);
+    broadcastStatus();
     res.status(400).json({ success: false, error: err.message });
   }
 });
@@ -428,6 +439,8 @@ app.post('/api/programs/:id/stop', requireApiToken, (req, res) => {
     const result = stopProgram(req.params.id);
     res.json({ success: true, data: result });
   } catch (err) {
+    appendProgramLog(req.params.id, `[system] Stop failed: ${err.message}`);
+    broadcastStatus();
     res.status(400).json({ success: false, error: err.message });
   }
 });
@@ -445,10 +458,14 @@ app.post('/api/programs/:id/restart', requireApiToken, (req, res) => {
         const result = startProgram(programId, config);
         res.json({ success: true, data: result });
       } catch (startErr) {
+        appendProgramLog(programId, `[system] Restart failed: ${startErr.message}`);
+        broadcastStatus();
         res.status(500).json({ success: false, error: `Restart failed: ${startErr.message}` });
       }
     }, 1500);
   } catch (err) {
+    appendProgramLog(req.params.id, `[system] Restart failed: ${err.message}`);
+    broadcastStatus();
     res.status(400).json({ success: false, error: err.message });
   }
 });
@@ -548,6 +565,13 @@ function startProgram(programId, config) {
         logs.shift();
       }
     });
+    broadcastStatus();
+  });
+
+  proc.on('error', (err) => {
+    appendProgramLog(programId, `[system] Process failed to start: ${err.message}`);
+    proc.isRunning = false;
+    processes.delete(programId);
     broadcastStatus();
   });
 
