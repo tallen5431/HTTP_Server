@@ -13,6 +13,21 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || '/home/jupyter-tj/projects'; //
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.MANAGER_API_TOKEN || null;
 
+function getBundledVoskTranscriberProgram() {
+  const programPath = path.join(__dirname, 'examples', 'vosk-transcriber');
+  return {
+    id: 'vosk-transcriber',
+    name: 'Vosk Voice Transcriber',
+    path: programPath,
+    env: {
+      HOST: '0.0.0.0',
+      PORT: '8090',
+      VOSK_MODEL_PATH: path.join(programPath, 'model')
+    },
+    comment: 'Bundled sample card for local voice transcription with a Vosk model. Install requirements and place a model at VOSK_MODEL_PATH before starting.'
+  };
+}
+
 // Process registry
 const processes = new Map();
 const processLogs = new Map();
@@ -36,6 +51,9 @@ function loadConfig() {
           const { discoverProjects, generateConfig } = require('./discover-projects');
           const projects = discoverProjects(PROJECTS_DIR);
           const autoConfig = generateConfig(projects);
+          if (!autoConfig.programs.some(program => program.id === 'vosk-transcriber')) {
+            autoConfig.programs.push(getBundledVoskTranscriberProgram());
+          }
 
           // Save the auto-generated config
           fs.writeFileSync(CONFIG_FILE, JSON.stringify(autoConfig, null, 2), 'utf8');
@@ -53,7 +71,7 @@ function loadConfig() {
       // Fallback default config so the UI can still start.
       const defaultConfig = {
         hostname: 'auto',
-        programs: []
+        programs: [getBundledVoskTranscriberProgram()]
       };
       cachedConfig = defaultConfig;
       cachedConfigMtimeMs = null;

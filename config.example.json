@@ -39,6 +39,17 @@
         "NODE_ENV": "production"
       },
       "comment": "No PORT env var and no URL, so no clickable link will appear"
+    },
+    {
+      "id": "vosk-transcriber",
+      "name": "Vosk Voice Transcriber",
+      "path": "/workspace/HTTP_Server/examples/vosk-transcriber",
+      "env": {
+        "HOST": "0.0.0.0",
+        "PORT": "8090",
+        "VOSK_MODEL_PATH": "/workspace/HTTP_Server/examples/vosk-transcriber/model"
+      },
+      "comment": "Bundled sample program card for transcribing WAV audio with a local Vosk model. Install examples/vosk-transcriber/requirements.txt and place a model at VOSK_MODEL_PATH."
     }
   ]
 }
