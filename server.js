@@ -9,7 +9,7 @@ const WebSocket = require('ws');
 
 // Configuration
 const CONFIG_FILE = process.env.CONFIG_FILE || './config.json';
-const PROJECTS_DIR = process.env.PROJECTS_DIR || '/home/jupyter-tj/projects'; // Default projects directory
+const PROJECTS_DIR = process.env.PROJECTS_DIR || '/opt/http-server-manager/projects';
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.MANAGER_API_TOKEN || null;
 
@@ -491,7 +491,7 @@ app.get('/api/programs/:id/logs', (req, res) => {
 
 app.get('/api/config', (req, res) => {
   const config = loadConfig();
-  res.json(config);
+  res.json({ ...config, projectsDir: PROJECTS_DIR });
 });
 
 // Stats endpoint
@@ -634,6 +634,55 @@ function stopProgram(programId) {
     status: 'stopping'
   };
 }
+
+// Browse a directory and return discovered projects (without modifying config)
+app.get('/api/browse-projects', (req, res) => {
+  const dir = req.query.dir || PROJECTS_DIR;
+
+  if (!dir) {
+    return res.status(400).json({ success: false, error: 'No directory specified' });
+  }
+
+  if (!fs.existsSync(dir)) {
+    return res.status(404).json({ success: false, error: `Directory not found: ${dir}` });
+  }
+
+  try {
+    const { parseStartScript, discoverProjects } = require('./discover-projects');
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const results = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const projectPath = path.join(dir, entry.name);
+      const startScriptPath = path.join(projectPath, 'Start.sh');
+      if (!fs.existsSync(startScriptPath)) continue;
+
+      const { env } = parseStartScript(startScriptPath);
+      if (!env.HOST) env.HOST = '0.0.0.0';
+
+      // Build display name from folder name
+      const displayName = entry.name
+        .replace(/[-_]/g, ' ')
+        .split(' ')
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+
+      const id = entry.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+
+      // Check if already in config
+      const config = loadConfig();
+      const alreadyAdded = config.programs.some(p => p.path === projectPath);
+
+      results.push({ id, name: displayName, path: projectPath, env, alreadyAdded });
+    }
+
+    res.json({ success: true, projects: results, dir });
+  } catch (err) {
+    console.error('[manager] Browse projects failed:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // Rediscover projects and regenerate config
 app.post('/api/rediscover', requireApiToken, (req, res) => {

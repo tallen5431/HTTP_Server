@@ -633,7 +633,7 @@ async function restartAll() {
 
 async function rediscoverProjects() {
   // Prompt for projects directory
-  const defaultPath = '/home/jupyter-tj/projects';
+  const defaultPath = defaultBrowseDir || '/opt/http-server-manager/projects';
   const projectsDir = prompt(
     'Enter the path to your projects directory:\n\n' +
     'This will scan the directory for projects with Start.sh files\n' +
@@ -753,6 +753,7 @@ function closeModal() {
   programModal.classList.add('hidden');
   programForm.reset();
   editingProgram = null;
+  document.getElementById('projectBrowser').classList.add('hidden');
 }
 
 function addEnvVarRow(key = '', value = '') {
@@ -855,8 +856,143 @@ async function deleteProgram(id, programName) {
   }
 }
 
+// ── Project browser ──────────────────────────────────────────────────────────
+
+let defaultBrowseDir = '';
+
+async function fetchDefaultBrowseDir() {
+  try {
+    const res = await fetch('/api/config');
+    const data = await res.json();
+    if (data.projectsDir) {
+      defaultBrowseDir = data.projectsDir;
+    } else if (data.programs && data.programs.length > 0) {
+      // Fall back to parent of first program path
+      const firstPath = data.programs[0].path || '';
+      const parts = firstPath.split('/');
+      parts.pop();
+      defaultBrowseDir = parts.join('/');
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function scanBrowseDir() {
+  const dirInput = document.getElementById('browserDir');
+  const list = document.getElementById('browserList');
+  const dir = dirInput.value.trim();
+
+  if (!dir) {
+    list.innerHTML = '<div class="browser-empty">Enter a directory path</div>';
+    return;
+  }
+
+  list.innerHTML = '<div class="browser-scanning">Scanning…</div>';
+
+  try {
+    const res = await fetch('/api/browse-projects?dir=' + encodeURIComponent(dir));
+    const data = await res.json();
+
+    if (!data.success) {
+      list.innerHTML = '<div class="browser-empty">Error: ' + data.error + '</div>';
+      return;
+    }
+
+    if (data.projects.length === 0) {
+      list.innerHTML = '<div class="browser-empty">No projects with Start.sh found in this directory</div>';
+      return;
+    }
+
+    list.innerHTML = '';
+    for (const proj of data.projects) {
+      const item = document.createElement('div');
+      item.className = 'browser-item' + (proj.alreadyAdded ? ' already-added' : '');
+      item.title = proj.alreadyAdded ? 'Already in config' : 'Click to select';
+
+      const icon = document.createElement('span');
+      icon.className = 'browser-item-icon';
+      icon.textContent = proj.alreadyAdded ? '✓' : '📁';
+
+      const info = document.createElement('div');
+      info.className = 'browser-item-info';
+
+      const name = document.createElement('div');
+      name.className = 'browser-item-name';
+      name.textContent = proj.name;
+
+      const pathEl = document.createElement('div');
+      pathEl.className = 'browser-item-path';
+      pathEl.textContent = proj.path;
+
+      info.appendChild(name);
+      info.appendChild(pathEl);
+
+      item.appendChild(icon);
+      item.appendChild(info);
+
+      if (proj.alreadyAdded) {
+        const badge = document.createElement('span');
+        badge.className = 'browser-item-badge';
+        badge.textContent = 'Added';
+        item.appendChild(badge);
+      }
+
+      if (!proj.alreadyAdded) {
+        item.addEventListener('click', () => selectBrowsedProject(proj));
+      }
+
+      list.appendChild(item);
+    }
+  } catch (err) {
+    list.innerHTML = '<div class="browser-empty">Failed to scan directory</div>';
+    console.error('Browse projects error:', err);
+  }
+}
+
+function selectBrowsedProject(proj) {
+  programPathInput.value = proj.path;
+
+  // Auto-fill name and ID only when adding a new program
+  if (!editingProgram) {
+    programNameInput.value = proj.name;
+    // Generate a safe ID if the field is empty
+    if (!programIdInput.value) {
+      programIdInput.value = proj.id;
+    }
+    // Populate env vars (replace defaults)
+    envVarsContainer.innerHTML = '';
+    for (const [k, v] of Object.entries(proj.env)) {
+      addEnvVarRow(k, v);
+    }
+    // Ensure PORT row exists if not already present
+    if (!proj.env.PORT) {
+      addEnvVarRow('PORT', '');
+    }
+  }
+
+  // Collapse the browser after selection
+  document.getElementById('projectBrowser').classList.add('hidden');
+}
+
+function toggleProjectBrowser() {
+  const browser = document.getElementById('projectBrowser');
+  const isHidden = browser.classList.toggle('hidden');
+  if (!isHidden) {
+    // Show browser — pre-fill dir and auto-scan
+    const dirInput = document.getElementById('browserDir');
+    if (!dirInput.value && defaultBrowseDir) {
+      dirInput.value = defaultBrowseDir;
+    }
+    if (dirInput.value) {
+      scanBrowseDir();
+    }
+    dirInput.focus();
+  }
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+  fetchDefaultBrowseDir();
+
   // Setup bulk action buttons
   document.getElementById('btnStartAll').addEventListener('click', startAll);
   document.getElementById('btnStopAll').addEventListener('click', stopAll);
@@ -878,6 +1014,13 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnCancel').addEventListener('click', closeModal);
   document.getElementById('programForm').addEventListener('submit', saveProgram);
   document.getElementById('btnAddEnvVar').addEventListener('click', () => addEnvVarRow());
+
+  // Project browser
+  document.getElementById('btnBrowseProjects').addEventListener('click', toggleProjectBrowser);
+  document.getElementById('btnScanDir').addEventListener('click', scanBrowseDir);
+  document.getElementById('browserDir').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); scanBrowseDir(); }
+  });
 
   // Close modal on background click
   programModal.addEventListener('click', (e) => {

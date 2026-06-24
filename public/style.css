@@ -895,6 +895,143 @@ main {
   transform: translateY(-1px);
 }
 
+/* Path input with Browse button */
+.path-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.path-input-row .form-input {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+/* Project browser panel */
+.project-browser {
+  margin-top: 10px;
+  border: 2px solid #e3e8ef;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+.project-browser.hidden {
+  display: none;
+}
+
+.browser-header {
+  padding: 10px 14px;
+  background: #eaf1fb;
+  border-bottom: 1px solid #d0dcea;
+}
+
+.browser-title {
+  display: block;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #444;
+  margin-bottom: 8px;
+}
+
+.browser-dir-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.browser-dir-input {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1.5px solid #ccd6e0;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  outline: none;
+  background: white;
+  font-family: 'Courier New', monospace;
+  transition: border-color 0.2s;
+}
+
+.browser-dir-input:focus {
+  border-color: #2196f3;
+  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.1);
+}
+
+.browser-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.browser-empty,
+.browser-scanning {
+  padding: 20px;
+  text-align: center;
+  color: #888;
+  font-size: 0.9rem;
+  font-style: italic;
+}
+
+.browser-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid #e8edf2;
+  transition: background 0.15s;
+}
+
+.browser-item:last-child {
+  border-bottom: none;
+}
+
+.browser-item:hover {
+  background: #e3edf8;
+}
+
+.browser-item.already-added {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.browser-item-icon {
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+
+.browser-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.browser-item-name {
+  font-weight: 600;
+  font-size: 0.92rem;
+  color: #222;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.browser-item-path {
+  font-size: 0.78rem;
+  color: #888;
+  font-family: 'Courier New', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.browser-item-badge {
+  font-size: 0.72rem;
+  background: #c8e6c9;
+  color: #2e7d32;
+  border-radius: 4px;
+  padding: 2px 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* Responsive Modal */
 @media (max-width: 768px) {
   .modal-content {
