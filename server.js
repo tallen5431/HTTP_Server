@@ -225,6 +225,26 @@ function getTailscaleHostname(config) {
   return null;
 }
 
+
+function stripPortFromHost(host) {
+  return String(host || '').replace(/^https?:\/\//i, '').replace(/\/+$/, '').replace(/:\d+$/, '');
+}
+
+function getRequestUrlContext(req) {
+  if (!req || !req.headers) return null;
+
+  const forwardedHost = req.headers['x-forwarded-host'];
+  const hostHeader = Array.isArray(forwardedHost) ? forwardedHost[0] : (forwardedHost || req.headers.host || '');
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const protocolHeader = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  const protocol = (protocolHeader || (req.socket && req.socket.encrypted ? 'https' : 'http')).split(',')[0].trim();
+  const hostname = stripPortFromHost(String(hostHeader).split(',')[0].trim());
+
+  if (!hostname) return null;
+
+  return { hostname, protocol };
+}
+
 // Get primary network IP address
 function getPrimaryIpAddress() {
   const { networkInterfaces } = require('os');
@@ -264,7 +284,7 @@ function getProgramConfig(programId, config) {
   return program;
 }
 
-function getProgramStatus(programId, config) {
+function getProgramStatus(programId, config, urlContext = null) {
   const program = config.programs.find(p => p.id === programId);
   if (!program) {
     return {
@@ -283,13 +303,13 @@ function getProgramStatus(programId, config) {
     id: program.id,
     name: program.name,
     status: isRunning ? 'running' : 'stopped',
-    url: generateProgramUrl(program, config, proc && proc.actualPort),
+    url: generateProgramUrl(program, config, proc && proc.actualPort, urlContext),
     pid: isRunning ? proc.pid : null,
     uptime: isRunning && proc.spawnDate ? Date.now() - proc.spawnDate : 0
   };
 }
 
-function generateProgramUrl(program, config, runtimePort = null) {
+function generateProgramUrl(program, config, runtimePort = null, urlContext = null) {
   // If a URL is explicitly provided, use it
   if (program.url) {
     return program.url;
@@ -298,18 +318,27 @@ function generateProgramUrl(program, config, runtimePort = null) {
   // Otherwise, attempt to generate from PORT
   const port = runtimePort || (program.env && (program.env.PORT || program.env.port));
   if (port) {
-    const protocol = program.urlProtocol || (config && config.urlProtocol) || 'http';
     const preferTailscale = program.preferTailscale || (config && config.preferTailscale);
+    const requestHostname = urlContext && urlContext.hostname;
+    const requestProtocol = urlContext && urlContext.protocol;
+    const protocol = program.urlProtocol || (preferTailscale && requestProtocol === 'https' ? 'https' : null) || (config && config.urlProtocol) || 'http';
     const programHostname = program.hostname || program.host;
     const configuredHostname = programHostname || (config && config.hostname);
     const tailscaleHostname = preferTailscale ? getTailscaleHostname(config) : null;
 
-    // Use program/config hostname when provided, otherwise prefer the Tailscale
-    // MagicDNS hostname for programs marked for Tailscale HTTPS, then fall back
-    // to the primary local/LAN address.
+    // If a browser reached the manager through a public HTTPS/Tailscale host,
+    // use that same host for Tailscale-preferred program cards. This covers
+    // systems where the tailscale CLI/env hostname is unavailable to Node and
+    // prevents WebSocket status refreshes from reverting cards to local IPs.
+    const requestPublicHostname = preferTailscale && requestHostname && requestHostname !== 'localhost'
+      ? requestHostname
+      : null;
+
+    // Use program/config hostname when provided, otherwise prefer the request's
+    // public host, then Tailscale MagicDNS, then the primary local/LAN address.
     const hostname = (configuredHostname && configuredHostname !== 'auto')
       ? configuredHostname
-      : (tailscaleHostname || getPrimaryIpAddress());
+      : (requestPublicHostname || tailscaleHostname || getPrimaryIpAddress());
 
     const cleanHostname = String(hostname).replace(/^https?:\/\//i, '').replace(/\/+$/, '');
     const shouldOmitPort = Boolean(program.omitPortInUrl || (config && config.omitPortInUrl));
@@ -321,8 +350,8 @@ function generateProgramUrl(program, config, runtimePort = null) {
   return null;
 }
 
-function getAllProgramsStatus(config) {
-  return config.programs.map(p => getProgramStatus(p.id, config));
+function getAllProgramsStatus(config, urlContext = null) {
+  return config.programs.map(p => getProgramStatus(p.id, config, urlContext));
 }
 
 function getProgramLogs(programId, lines = 100) {
@@ -335,11 +364,11 @@ const wsClients = new Set();
 
 function broadcastStatus() {
   const config = loadConfig();
-  const status = getAllProgramsStatus(config);
-  const message = JSON.stringify({ type: 'status', data: status });
 
   wsClients.forEach(client => {
     if (client.readyState === WebSocket.OPEN) {
+      const status = getAllProgramsStatus(config, client.urlContext || null);
+      const message = JSON.stringify({ type: 'status', data: status });
       client.send(message);
     }
   });
@@ -380,7 +409,7 @@ function requireApiToken(req, res, next) {
 // API Routes
 app.get('/api/programs', (req, res) => {
   const config = loadConfig();
-  const status = getAllProgramsStatus(config);
+  const status = getAllProgramsStatus(config, getRequestUrlContext(req));
   res.json(status);
 });
 
@@ -861,11 +890,12 @@ async function startServer() {
       }
     }
 
+    ws.urlContext = getRequestUrlContext(req);
     wsClients.add(ws);
     console.log('WebSocket client connected');
 
-    // Send initial status with the latest config
-    const status = getAllProgramsStatus(loadConfig());
+    // Send initial status with the latest config using this client's public host.
+    const status = getAllProgramsStatus(loadConfig(), ws.urlContext);
     ws.send(JSON.stringify({ type: 'status', data: status }));
 
     ws.on('close', () => {
