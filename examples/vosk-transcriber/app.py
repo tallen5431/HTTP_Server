@@ -337,6 +337,17 @@ def _transcribe_file(filename):
 
 
 if __name__ == '__main__':
-    print(f'Vosk transcriber listening on http://{HOST}:{PORT}', flush=True)
+    port = PORT
+    while True:
+        try:
+            server = ThreadingHTTPServer((HOST, port), Handler)
+            break
+        except OSError as e:
+            if e.errno == 98:  # Address already in use
+                print(f'Port {port} in use, trying {port + 1}…', flush=True)
+                port += 1
+            else:
+                raise
+    print(f'Vosk transcriber listening on http://{HOST}:{port}', flush=True)
     print(f'Model path: {MODEL_PATH}', flush=True)
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    server.serve_forever()
