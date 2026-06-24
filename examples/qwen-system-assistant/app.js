@@ -2,6 +2,8 @@
 
 const http = require('http');
 const { execFile } = require('child_process');
+const fs = require('fs/promises');
+const path = require('path');
 const os = require('os');
 
 const HOST = process.env.HOST || '0.0.0.0';
@@ -9,6 +11,9 @@ const PORT = Number(process.env.PORT || 8091);
 const OLLAMA_HOST = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/+$/, '');
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder:7b';
 const MAX_OUTPUT = 12000;
+const MAX_FILE_SCAN_DEPTH = 8;
+const MAX_FILE_SCAN_ENTRIES = 500;
+const MAX_FILE_SCAN_VISITED = 5000;
 
 function sendJson(res, status, data) {
   const body = JSON.stringify(data, null, 2);
@@ -30,6 +35,119 @@ function command(label, file, args, timeout = 5000) {
       });
     });
   });
+}
+
+function clampDepth(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 2;
+  return Math.min(parsed, MAX_FILE_SCAN_DEPTH);
+}
+
+function rememberTop(list, entry, scoreKey, limit = 20) {
+  list.push(entry);
+  list.sort((a, b) => b[scoreKey] - a[scoreKey]);
+  if (list.length > limit) list.length = limit;
+}
+
+async function scanFiles(rootPath, requestedDepth = 2) {
+  const root = path.resolve(rootPath || os.homedir());
+  const maxDepth = clampDepth(requestedDepth);
+  const result = {
+    root,
+    maxDepth,
+    collectedAt: new Date().toISOString(),
+    limits: {
+      maxDepth: MAX_FILE_SCAN_DEPTH,
+      maxEntries: MAX_FILE_SCAN_ENTRIES,
+      maxVisited: MAX_FILE_SCAN_VISITED
+    },
+    summary: {
+      files: 0,
+      directories: 0,
+      symlinks: 0,
+      other: 0,
+      totalFileBytes: 0,
+      visited: 0,
+      truncated: false
+    },
+    entries: [],
+    largestFiles: [],
+    recentlyModified: [],
+    errors: []
+  };
+
+  const queue = [{ fullPath: root, relativePath: '.', depth: 0 }];
+
+  while (queue.length) {
+    if (result.summary.visited >= MAX_FILE_SCAN_VISITED) {
+      result.summary.truncated = true;
+      break;
+    }
+
+    const current = queue.shift();
+    result.summary.visited += 1;
+    let stat;
+    try {
+      stat = await fs.lstat(current.fullPath);
+    } catch (error) {
+      result.errors.push({ path: current.relativePath, message: error.message });
+      continue;
+    }
+
+    const type = stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' : stat.isSymbolicLink() ? 'symlink' : 'other';
+    if (type === 'file') {
+      result.summary.files += 1;
+      result.summary.totalFileBytes += stat.size;
+    } else if (type === 'directory') {
+      result.summary.directories += 1;
+    } else if (type === 'symlink') {
+      result.summary.symlinks += 1;
+    } else {
+      result.summary.other += 1;
+    }
+
+    const entry = {
+      path: current.relativePath,
+      type,
+      depth: current.depth,
+      sizeBytes: stat.size,
+      modifiedAt: stat.mtime.toISOString(),
+      mode: `0${(stat.mode & 0o777).toString(8)}`
+    };
+
+    if (result.entries.length < MAX_FILE_SCAN_ENTRIES) {
+      result.entries.push(entry);
+    } else {
+      result.summary.truncated = true;
+    }
+
+    if (type === 'file') {
+      rememberTop(result.largestFiles, entry, 'sizeBytes');
+      rememberTop(result.recentlyModified, { ...entry, modifiedMs: stat.mtimeMs }, 'modifiedMs');
+    }
+
+    if (type !== 'directory' || current.depth >= maxDepth) continue;
+
+    let children;
+    try {
+      children = await fs.readdir(current.fullPath);
+    } catch (error) {
+      result.errors.push({ path: current.relativePath, message: error.message });
+      continue;
+    }
+
+    children.sort((a, b) => a.localeCompare(b));
+    for (const child of children) {
+      queue.push({
+        fullPath: path.join(current.fullPath, child),
+        relativePath: current.relativePath === '.' ? child : path.join(current.relativePath, child),
+        depth: current.depth + 1
+      });
+    }
+  }
+
+  result.recentlyModified = result.recentlyModified.map(({ modifiedMs, ...entry }) => entry);
+  return result;
 }
 
 async function collectSystemContext() {
@@ -61,7 +179,16 @@ async function collectSystemContext() {
   return { staticInfo, checks };
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function html() {
+  const defaultFilePath = escapeHtml(os.homedir());
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -69,7 +196,7 @@ function html() {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Qwen System Assistant</title>
 <style>
-body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#111827;color:#e5e7eb}main{max-width:1100px;margin:0 auto;padding:24px}.card{background:#1f2937;border:1px solid #374151;border-radius:14px;padding:18px;margin:16px 0}button{background:#2563eb;color:white;border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}textarea{width:100%;min-height:130px;border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:12px}pre{white-space:pre-wrap;overflow:auto;background:#0b1020;border-radius:10px;padding:14px}.muted{color:#9ca3af}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}</style>
+body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#111827;color:#e5e7eb}main{max-width:1100px;margin:0 auto;padding:24px}.card{background:#1f2937;border:1px solid #374151;border-radius:14px;padding:18px;margin:16px 0}button{background:#2563eb;color:white;border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}input{border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:10px}input[type=text]{min-width:320px}textarea{width:100%;min-height:130px;border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:12px}pre{white-space:pre-wrap;overflow:auto;background:#0b1020;border-radius:10px;padding:14px}.muted{color:#9ca3af}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}</style>
 </head>
 <body><main>
 <h1>Qwen System Assistant</h1>
@@ -78,15 +205,22 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background
   <div class="row"><button id="scan">Scan System</button><button id="ask">Send to AI</button><span id="status" class="muted">Idle</span></div>
   <p class="muted">The scan gathers disk, process, network, journal, and large-file summaries using allow-listed commands.</p>
 </div>
-<div class="card"><h2>Question</h2><textarea id="prompt">Review this Linux system context. Identify operational risks, storage or process issues, and useful next steps. Keep commands safe and explain why.</textarea></div>
+<div class="card">
+  <h2>File Scan</h2>
+  <div class="row"><label>Path <input id="filePath" type="text" value="${defaultFilePath}"></label><label>Depth <input id="fileDepth" type="number" min="0" max="${MAX_FILE_SCAN_DEPTH}" value="2"></label><button id="fileScan">Scan Files</button></div>
+  <p class="muted">Scans file names and metadata only. Depth 0 scans just the selected path; higher depths include child directories up to ${MAX_FILE_SCAN_DEPTH} levels.</p>
+</div>
+<div class="card"><h2>Question</h2><textarea id="prompt">Review this Linux system context and any file scan context. Identify operational risks, storage or process issues, and useful next steps. Keep commands safe and explain why.</textarea></div>
 <div class="card"><h2>Collected Context</h2><pre id="context">No scan yet.</pre></div>
 <div class="card"><h2>AI Analysis</h2><pre id="answer">No analysis yet.</pre></div>
 <script>
 let context=null;
+let fileScan=null;
 const statusEl=document.getElementById('status');
 async function api(path, body){const res=await fetch(path,{method:body?'POST':'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});if(!res.ok)throw new Error(await res.text());return res.json();}
-document.getElementById('scan').onclick=async()=>{statusEl.textContent='Scanning…';try{context=await api('/api/scan');document.getElementById('context').textContent=JSON.stringify(context,null,2);statusEl.textContent='Scan complete';}catch(e){statusEl.textContent='Scan failed';document.getElementById('context').textContent=e.message;}};
-document.getElementById('ask').onclick=async()=>{if(!context)document.getElementById('scan').click();statusEl.textContent='Asking AI…';try{const result=await api('/api/analyze',{prompt:document.getElementById('prompt').value,context});document.getElementById('answer').textContent=result.response;statusEl.textContent='Analysis complete';}catch(e){statusEl.textContent='AI request failed';document.getElementById('answer').textContent=e.message;}};
+document.getElementById('scan').onclick=async()=>{statusEl.textContent='Scanning…';try{context=await api('/api/scan');document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='Scan complete';}catch(e){statusEl.textContent='Scan failed';document.getElementById('context').textContent=e.message;}};
+document.getElementById('fileScan').onclick=async()=>{const root=encodeURIComponent(document.getElementById('filePath').value);const depth=encodeURIComponent(document.getElementById('fileDepth').value);statusEl.textContent='Scanning files…';try{fileScan=await api('/api/file-scan?path='+root+'&depth='+depth);document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='File scan complete';}catch(e){statusEl.textContent='File scan failed';document.getElementById('context').textContent=e.message;}};
+document.getElementById('ask').onclick=async()=>{statusEl.textContent='Asking AI…';try{if(!context&&!fileScan)context=await api('/api/scan');const result=await api('/api/analyze',{prompt:document.getElementById('prompt').value,context:{system:context,fileScan}});document.getElementById('answer').textContent=result.response;statusEl.textContent='Analysis complete';}catch(e){statusEl.textContent='AI request failed';document.getElementById('answer').textContent=e.message;}};
 </script></main></body></html>`;
 }
 
@@ -154,6 +288,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && req.url === '/api/scan') {
       sendJson(res, 200, await collectSystemContext());
+      return;
+    }
+    if (req.method === 'GET' && req.url.startsWith('/api/file-scan')) {
+      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      if (url.pathname !== '/api/file-scan') {
+        sendJson(res, 404, { error: 'Not found' });
+        return;
+      }
+      sendJson(res, 200, await scanFiles(url.searchParams.get('path') || os.homedir(), url.searchParams.get('depth') || 2));
       return;
     }
     if (req.method === 'POST' && req.url === '/api/analyze') {
