@@ -13,6 +13,7 @@ A simple, self-configuring HTTP server manager that automatically detects your n
 - **🎨 Clean Web UI**: Modern, responsive interface that works on desktop and mobile
 - **🌐 Multi-program Support**: Manage multiple applications from a single interface
 - **🧠 Framework Detection**: Intelligently detects Flask, Django, FastAPI, Node.js, Streamlit and configures accordingly
+- **🎙️ Bundled Vosk Card**: Includes a ready-to-start sample voice transcription card powered by a local Vosk model
 
 ## Prerequisites
 
@@ -185,6 +186,21 @@ For a Python/Flask app:
 export PORT=8081
 python app.py
 ```
+
+### Bundled Vosk Voice Transcriber
+
+The repository includes a sample program at `examples/vosk-transcriber` that is added as a **Vosk Voice Transcriber** card when the manager starts without an existing `config.json`. You can also copy the matching entry from `config.example.json` into your own config.
+
+Before starting the card:
+
+1. Install the Python dependency:
+   ```bash
+   python3 -m pip install -r examples/vosk-transcriber/requirements.txt
+   ```
+2. Download and unpack a Vosk speech model into `examples/vosk-transcriber/model`, or set `VOSK_MODEL_PATH` to another unpacked model directory.
+3. Start the card and open `http://YOUR_IP:8090` to upload a mono PCM WAV file for transcription.
+
+The bundled app defaults to `HOST=0.0.0.0` and `PORT=8090`, so it can be reached from other machines when your firewall allows the port.
 
 ## API Endpoints
 
