@@ -9,8 +9,12 @@ const os = require('os');
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 8091);
 const OLLAMA_HOST = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/+$/, '');
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder:3b';
-const MAX_OUTPUT = 12000;
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder:0.5b';
+const OLLAMA_REQUEST_TIMEOUT_MS = Number(process.env.OLLAMA_REQUEST_TIMEOUT_MS || 10 * 60 * 1000);
+const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX || 8192);
+const OLLAMA_NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT || 512);
+const MAX_OUTPUT = 4000;
+const MAX_MODEL_CONTEXT_CHARS = Number(process.env.MAX_MODEL_CONTEXT_CHARS || 24000);
 const MAX_FILE_SCAN_DEPTH = 8;
 const MAX_FILE_SCAN_ENTRIES = 500;
 const MAX_FILE_SCAN_VISITED = 5000;
@@ -202,7 +206,7 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background
 </head>
 <body><main>
 <h1>Qwen System Assistant</h1>
-<p class="muted">Collect read-only Linux context and ask <code>${ollamaModel}</code> through Ollama at <code>${ollamaHost}</code>.</p>
+<p class="muted">Collect read-only Linux context and ask <code>${ollamaModel}</code> through Ollama at <code>${ollamaHost}</code>. Prompts are compacted for smaller local models, and long model runs are streamed from Ollama so slow responses do not look like a failed fetch.</p>
 <div class="card">
   <div class="row"><button id="scan">Scan System</button><button id="ask">Send to AI</button><span id="status" class="muted">Idle</span></div>
   <p class="muted">The scan gathers disk, process, network, journal, and large-file summaries using allow-listed commands.</p>
@@ -212,17 +216,17 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background
   <div class="row"><label>Path <input id="filePath" type="text" value="${defaultFilePath}"></label><label>Depth <input id="fileDepth" type="number" min="0" max="${MAX_FILE_SCAN_DEPTH}" value="2"></label><button id="fileScan">Scan Files</button></div>
   <p class="muted">Scans file names and metadata only. Depth 0 scans just the selected path; higher depths include child directories up to ${MAX_FILE_SCAN_DEPTH} levels.</p>
 </div>
-<div class="card"><h2>Question</h2><textarea id="prompt">Review this Linux system context and any file scan context. Identify operational risks, storage or process issues, and useful next steps. Keep commands safe and explain why.</textarea></div>
+<div class="card"><h2>Question</h2><textarea id="prompt">Review this compact Linux system summary. List the top 3 risks or issues and give safe next-step commands. Be concise.</textarea></div>
 <div class="card"><h2>Collected Context</h2><pre id="context">No scan yet.</pre></div>
 <div class="card"><h2>AI Analysis</h2><pre id="answer">No analysis yet.</pre></div>
 <script>
 let context=null;
 let fileScan=null;
 const statusEl=document.getElementById('status');
-async function api(path, body){const res=await fetch(path,{method:body?'POST':'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});if(!res.ok)throw new Error(await res.text());return res.json();}
+async function api(path, body){const res=await fetch(path,{method:body?'POST':'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});const text=await res.text();let data;try{data=text?JSON.parse(text):{};}catch(e){data={error:text||res.statusText};}if(!res.ok)throw new Error(data.error||text||res.statusText);return data;}
 document.getElementById('scan').onclick=async()=>{statusEl.textContent='Scanning…';try{context=await api('/api/scan');document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='Scan complete';}catch(e){statusEl.textContent='Scan failed';document.getElementById('context').textContent=e.message;}};
 document.getElementById('fileScan').onclick=async()=>{const root=encodeURIComponent(document.getElementById('filePath').value);const depth=encodeURIComponent(document.getElementById('fileDepth').value);statusEl.textContent='Scanning files…';try{fileScan=await api('/api/file-scan?path='+root+'&depth='+depth);document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='File scan complete';}catch(e){statusEl.textContent='File scan failed';document.getElementById('context').textContent=e.message;}};
-document.getElementById('ask').onclick=async()=>{statusEl.textContent='Asking AI…';try{if(!context&&!fileScan)context=await api('/api/scan');const result=await api('/api/analyze',{prompt:document.getElementById('prompt').value,context:{system:context,fileScan}});document.getElementById('answer').textContent=result.response;statusEl.textContent='Analysis complete';}catch(e){statusEl.textContent='AI request failed';document.getElementById('answer').textContent=e.message;}};
+document.getElementById('ask').onclick=async()=>{const askButton=document.getElementById('ask');askButton.disabled=true;statusEl.textContent='Asking AI… this can take several minutes on local models';document.getElementById('answer').textContent='Waiting for model response…';try{if(!context&&!fileScan)context=await api('/api/scan');const result=await api('/api/analyze',{prompt:document.getElementById('prompt').value,context:{system:context,fileScan}});document.getElementById('answer').textContent=result.response||JSON.stringify(result,null,2);statusEl.textContent='Analysis complete';}catch(e){statusEl.textContent='AI request failed';document.getElementById('answer').textContent=e.message;}finally{askButton.disabled=false;}};
 </script></main></body></html>`;
 }
 
@@ -241,7 +245,7 @@ async function findInstalledModel(requestedModel) {
     const exact = models.find(model => model.name === requestedModel);
     if (exact) return exact.name;
 
-    // If "qwen2.5-coder" is configured but "qwen2.5-coder:3b" is installed,
+    // If "qwen2.5-coder" is configured but "qwen2.5-coder:0.5b" is installed,
     // retry with the tagged name so existing cards keep working.
     const taggedMatch = models.find(model => model.name && model.name.startsWith(`${requestedModel}:`));
     return taggedMatch ? taggedMatch.name : null;
@@ -250,16 +254,120 @@ async function findInstalledModel(requestedModel) {
   }
 }
 
+function truncateString(value, maxLength) {
+  const text = String(value || '');
+  if (!Number.isFinite(maxLength) || text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}\n… truncated ${text.length - maxLength} characters …`;
+}
+
+function compactSystemContext(system) {
+  if (!system) return null;
+  return {
+    staticInfo: system.staticInfo,
+    checks: Array.isArray(system.checks) ? system.checks.map(check => ({
+      label: check.label,
+      command: check.command,
+      ok: check.ok,
+      output: truncateString(check.output, 1500)
+    })) : []
+  };
+}
+
+function compactFileScan(fileScan) {
+  if (!fileScan) return null;
+  return {
+    root: fileScan.root,
+    maxDepth: fileScan.maxDepth,
+    collectedAt: fileScan.collectedAt,
+    limits: fileScan.limits,
+    summary: fileScan.summary,
+    largestFiles: Array.isArray(fileScan.largestFiles) ? fileScan.largestFiles.slice(0, 10) : [],
+    recentlyModified: Array.isArray(fileScan.recentlyModified) ? fileScan.recentlyModified.slice(0, 10) : [],
+    errors: Array.isArray(fileScan.errors) ? fileScan.errors.slice(0, 10) : [],
+    entries: Array.isArray(fileScan.entries) ? fileScan.entries.slice(0, 80) : []
+  };
+}
+
+function compactContextForModel(context) {
+  const compacted = {
+    system: compactSystemContext(context?.system || context),
+    fileScan: compactFileScan(context?.fileScan)
+  };
+  let serialized = JSON.stringify(compacted, null, 2);
+  if (Number.isFinite(MAX_MODEL_CONTEXT_CHARS) && serialized.length > MAX_MODEL_CONTEXT_CHARS) {
+    serialized = `${serialized.slice(0, MAX_MODEL_CONTEXT_CHARS)}\n… context truncated for smaller local model …`;
+  }
+  return serialized;
+}
+
+function getAbortSignal(timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
+  if (AbortSignal.timeout) return AbortSignal.timeout(timeoutMs);
+
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), timeoutMs).unref?.();
+  return controller.signal;
+}
+
+function describeFetchError(error) {
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+    return `Ollama request timed out after ${Math.round(OLLAMA_REQUEST_TIMEOUT_MS / 1000)} seconds. Increase OLLAMA_REQUEST_TIMEOUT_MS or use a smaller/faster model.`;
+  }
+  return `Could not reach Ollama at ${OLLAMA_HOST}: ${error.message}. If the model is still running, check that OLLAMA_HOST is reachable from this process and try increasing OLLAMA_REQUEST_TIMEOUT_MS.`;
+}
+
+async function readOllamaStream(response) {
+  const decoder = new TextDecoder();
+  let buffered = '';
+  let fullResponse = '';
+  let finalData = null;
+
+  for await (const chunk of response.body) {
+    buffered += decoder.decode(chunk, { stream: true });
+    const lines = buffered.split('\n');
+    buffered = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const data = JSON.parse(line);
+      if (data.error) throw new Error(data.error);
+      if (data.response) fullResponse += data.response;
+      if (data.done) finalData = data;
+    }
+  }
+
+  buffered += decoder.decode();
+  if (buffered.trim()) {
+    const data = JSON.parse(buffered);
+    if (data.error) throw new Error(data.error);
+    if (data.response) fullResponse += data.response;
+    if (data.done) finalData = data;
+  }
+
+  return { ...(finalData || {}), response: fullResponse };
+}
+
 async function generateWithModel(model, prompt, context) {
-  const response = await fetch(`${OLLAMA_HOST}/api/generate`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      stream: false,
-      prompt: `${prompt}\n\nSystem context JSON:\n${JSON.stringify(context, null, 2)}`
-    })
-  });
+  const compactContext = compactContextForModel(context);
+  let response;
+  try {
+    response = await fetch(`${OLLAMA_HOST}/api/generate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: getAbortSignal(OLLAMA_REQUEST_TIMEOUT_MS),
+      body: JSON.stringify({
+        model,
+        stream: true,
+        options: {
+          num_ctx: OLLAMA_NUM_CTX,
+          num_predict: OLLAMA_NUM_PREDICT
+        },
+        prompt: `${prompt}\n\nUse only this compact JSON context. If details are missing, say what to inspect next.\n${compactContext}`
+      })
+    });
+  } catch (error) {
+    throw new Error(describeFetchError(error));
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -269,10 +377,10 @@ async function generateWithModel(model, prompt, context) {
       return generateWithModel(installedModel, prompt, context);
     }
 
-    throw new Error(`Ollama returned HTTP ${response.status}: ${errorText}. Check OLLAMA_MODEL; Ollama model names include tags such as qwen2.5-coder:3b.`);
+    throw new Error(`Ollama returned HTTP ${response.status}: ${errorText}. Check OLLAMA_MODEL; Ollama model names include tags such as qwen2.5-coder:0.5b.`);
   }
 
-  const data = await response.json();
+  const data = await readOllamaStream(response);
   return model === OLLAMA_MODEL ? data : { ...data, model };
 }
 
@@ -311,7 +419,12 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+server.requestTimeout = OLLAMA_REQUEST_TIMEOUT_MS + 30000;
+server.headersTimeout = Math.max(server.headersTimeout, OLLAMA_REQUEST_TIMEOUT_MS + 35000);
+server.timeout = 0;
+
 server.listen(PORT, HOST, () => {
   console.log(`Qwen System Assistant listening on http://${HOST}:${PORT}`);
   console.log(`Using Ollama model ${OLLAMA_MODEL} at ${OLLAMA_HOST}`);
+  console.log(`Ollama request timeout: ${OLLAMA_REQUEST_TIMEOUT_MS}ms`);
 });

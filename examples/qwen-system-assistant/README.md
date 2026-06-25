@@ -1,6 +1,6 @@
 # Qwen System Assistant
 
-A bundled HTTP Server Manager program that connects to a local Ollama model such as `qwen2.5-coder:3b` and gathers read-only Linux system context for analysis.
+A bundled HTTP Server Manager program that connects to a local Ollama model such as `qwen2.5-coder:0.5b` and gathers read-only Linux system context for analysis.
 
 ## Requirements
 
@@ -8,7 +8,7 @@ A bundled HTTP Server Manager program that connects to a local Ollama model such
 - A pulled model, for example:
 
 ```bash
-ollama pull qwen2.5-coder:3b
+ollama pull qwen2.5-coder:0.5b
 ```
 
 ## Environment
@@ -16,9 +16,13 @@ ollama pull qwen2.5-coder:3b
 - `HOST` - bind address, default `0.0.0.0`
 - `PORT` - web UI port, default `8091`
 - `OLLAMA_HOST` - Ollama API URL, default `http://127.0.0.1:11434`
-- `OLLAMA_MODEL` - model name, default `qwen2.5-coder:3b`
+- `OLLAMA_MODEL` - model name, default `qwen2.5-coder:0.5b`
+- `OLLAMA_REQUEST_TIMEOUT_MS` - maximum time to wait for one Ollama generation, default `600000` (10 minutes)
+- `OLLAMA_NUM_CTX` - Ollama context window used for analysis, default `8192`
+- `OLLAMA_NUM_PREDICT` - maximum generated tokens for concise analysis, default `512`
+- `MAX_MODEL_CONTEXT_CHARS` - maximum compacted JSON context sent to the model, default `24000`
 
-The system scan endpoint runs an allow-listed set of read-only commands with short timeouts. It does not make filesystem changes.
+The system scan endpoint runs an allow-listed set of read-only commands with short timeouts. It does not make filesystem changes. AI analysis compacts scan results before sending them to Ollama, caps generated output for concise responses, and uses Ollama's streaming API internally so the app receives model output incrementally instead of waiting silently for a single long response. If a local model is still too slow, raise `OLLAMA_REQUEST_TIMEOUT_MS`, lower `MAX_MODEL_CONTEXT_CHARS`, or choose a smaller installed model.
 
 
 ## File scan
