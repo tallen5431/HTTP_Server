@@ -48,16 +48,37 @@ function getBundledCodeSmithProgram() {
   };
 }
 
+function getBundledQwenSystemAssistantProgram() {
+  const programPath = path.join(__dirname, 'examples', 'qwen-system-assistant');
+  return {
+    id: 'qwen-system-assistant',
+    name: 'Qwen System Assistant',
+    path: programPath,
+    env: {
+      HOST: '0.0.0.0',
+      PORT: '8091',
+      OLLAMA_HOST: 'http://127.0.0.1:11434',
+      OLLAMA_MODEL: 'qwen2.5-coder:7b'
+    },
+    comment: 'Bundled local AI assistant card. Collects read-only Linux system context and sends it to Ollama for analysis. Run "ollama pull qwen2.5-coder:3b" or set OLLAMA_MODEL to any installed model.'
+  };
+}
 
-function ensureBundledVoskProgram(config) {
+function ensureBundledPrograms(config) {
   if (!config.programs.some(program => isVoskProgram(program))) {
     config.programs.push(getBundledVoskTranscriberProgram());
   }
   if (!config.programs.some(program => isCodeSmithProgram(program))) {
     config.programs.push(getBundledCodeSmithProgram());
   }
+  if (!config.programs.some(program => isQwenSystemAssistantProgram(program))) {
+    config.programs.push(getBundledQwenSystemAssistantProgram());
+  }
   return config;
 }
+
+// Kept for backwards compatibility with any external callers
+const ensureBundledVoskProgram = ensureBundledPrograms;
 
 function mergeExistingProgramUrlOptions(newProgram, existingProgram) {
   if (!existingProgram) return;
@@ -87,7 +108,8 @@ function preserveExistingProgramUrlOptions(newConfig, existingConfig) {
     const existingProgram = existingConfig.programs.find(program =>
       program.id === newProgram.id ||
       (isVoskProgram(program) && isVoskProgram(newProgram)) ||
-      (isCodeSmithProgram(program) && isCodeSmithProgram(newProgram))
+      (isCodeSmithProgram(program) && isCodeSmithProgram(newProgram)) ||
+      (isQwenSystemAssistantProgram(program) && isQwenSystemAssistantProgram(newProgram))
     );
     mergeExistingProgramUrlOptions(newProgram, existingProgram);
   }
@@ -135,7 +157,7 @@ function loadConfig() {
       // Fallback default config so the UI can still start.
       const defaultConfig = {
         hostname: 'auto',
-        programs: [getBundledVoskTranscriberProgram()]
+        programs: [getBundledVoskTranscriberProgram(), getBundledCodeSmithProgram(), getBundledQwenSystemAssistantProgram()]
       };
       cachedConfig = defaultConfig;
       cachedConfigMtimeMs = null;
@@ -145,7 +167,7 @@ function loadConfig() {
     const stats = fs.statSync(CONFIG_FILE);
     if (!cachedConfig || stats.mtimeMs !== cachedConfigMtimeMs) {
       const data = fs.readFileSync(CONFIG_FILE, 'utf8');
-      const config = JSON.parse(data);
+      const config = ensureBundledPrograms(JSON.parse(data));
       validateConfig(config);
       cachedConfig = config;
       cachedConfigMtimeMs = stats.mtimeMs;
@@ -172,6 +194,14 @@ function isCodeSmithProgram(program) {
     program.id === 'codesmith' ||
     /^codesmith$/i.test(program.name || '') ||
     /[/\\]codesmith([/\\]|$)/.test(program.path || '')
+  );
+}
+
+function isQwenSystemAssistantProgram(program) {
+  return program && (
+    program.id === 'qwen-system-assistant' ||
+    /qwen system assistant/i.test(program.name || '') ||
+    /qwen-system-assistant/.test(program.path || '')
   );
 }
 

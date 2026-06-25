@@ -66,6 +66,18 @@
       "urlProtocol": "https",
       "preferTailscale": true,
       "omitPortInUrl": true
+    },
+    {
+      "id": "qwen-system-assistant",
+      "name": "Qwen System Assistant",
+      "path": "/opt/http-server-manager/examples/qwen-system-assistant",
+      "env": {
+        "HOST": "0.0.0.0",
+        "PORT": "8091",
+        "OLLAMA_HOST": "http://127.0.0.1:11434",
+        "OLLAMA_MODEL": "qwen2.5-coder:7b"
+      },
+      "comment": "Bundled local AI assistant. Collects read-only Linux system context and sends it to Ollama for analysis. Run 'ollama pull qwen2.5-coder:3b' first, or change OLLAMA_MODEL to any installed model."
     }
   ]
 }
