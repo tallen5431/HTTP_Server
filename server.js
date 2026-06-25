@@ -59,9 +59,12 @@ function getBundledQwenSystemAssistantProgram() {
       HOST: '0.0.0.0',
       PORT: '8091',
       OLLAMA_HOST: 'http://127.0.0.1:11434',
-      OLLAMA_MODEL: 'qwen2.5-coder:7b'
+      OLLAMA_MODEL: 'qwen2.5-coder:0.5b',
+      OLLAMA_NUM_CTX: '8192',
+      OLLAMA_NUM_PREDICT: '512',
+      MAX_MODEL_CONTEXT_CHARS: '24000'
     },
-    comment: 'Bundled local AI assistant card. Collects read-only Linux system context and sends it to Ollama for analysis. Run "ollama pull qwen2.5-coder:3b" or set OLLAMA_MODEL to any installed model.'
+    comment: 'Bundled local AI assistant card. Collects read-only Linux system context and sends a compact prompt to Ollama for analysis. Run "ollama pull qwen2.5-coder:0.5b" or set OLLAMA_MODEL to any installed model.'
   };
 }
 
