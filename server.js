@@ -40,11 +40,12 @@ function getBundledCodeSmithProgram() {
     env: {
       HOST: '0.0.0.0',
       PORT: '8050',
+      GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
       CODESMITH_LLM_BASE_URL: process.env.CODESMITH_LLM_BASE_URL || 'http://100.98.112.1:11434/v1',
       CODESMITH_LLM_API_KEY: process.env.CODESMITH_LLM_API_KEY || 'not-needed',
       CODESMITH_LLM_MODEL: process.env.CODESMITH_LLM_MODEL || 'qwen2.5-coder:7b'
     },
-    comment: 'AI-assisted code modification UI. Start.sh auto-pulls the latest CodeSmith from GitHub. Set CODESMITH_LLM_BASE_URL to your Ollama endpoint (default: desktop-glpggos via Tailscale).'
+    comment: 'AI-assisted code modification UI. Set GITHUB_TOKEN to a GitHub PAT with repo read access so Start.sh can clone the private CodeSmith repo. Set CODESMITH_LLM_BASE_URL to your Ollama endpoint (default: desktop-glpggos via Tailscale).'
   };
 }
 

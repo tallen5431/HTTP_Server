@@ -47,11 +47,12 @@
       "env": {
         "HOST": "0.0.0.0",
         "PORT": "8050",
+        "GITHUB_TOKEN": "",
         "CODESMITH_LLM_BASE_URL": "http://100.98.112.1:11434/v1",
         "CODESMITH_LLM_API_KEY": "not-needed",
         "CODESMITH_LLM_MODEL": "qwen2.5-coder:7b"
       },
-      "comment": "AI-assisted code modification UI. Connects to Ollama on desktop-glpggos via Tailscale (100.98.112.1:11434). Start.sh auto-pulls the latest from the claude/zealous-babbage-4m10qp branch. Change CODESMITH_LLM_MODEL to switch models."
+      "comment": "AI-assisted code modification UI. Set GITHUB_TOKEN to a GitHub PAT (repo read scope) so Start.sh can clone the private CodeSmith repo. Connects to Ollama on desktop-glpggos via Tailscale (100.98.112.1:11434)."
     },
     {
       "id": "vosk-transcriber",

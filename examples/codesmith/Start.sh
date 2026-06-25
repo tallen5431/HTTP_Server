@@ -9,17 +9,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/src"
 BRANCH="claude/zealous-babbage-4m10qp"
-REPO="git@github.com:tallen5431/CodeSmith.git"
+REPO_HTTPS="https://github.com/tallen5431/CodeSmith.git"
 
 # ── Git: clone or update ──────────────────────────────────────────────────────
+# Use HTTPS with a GitHub token if GITHUB_TOKEN is set, otherwise plain HTTPS.
+# Set GITHUB_TOKEN in the manager card's env vars (Edit card in the web UI).
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    REPO_URL="https://oauth2:${GITHUB_TOKEN}@github.com/tallen5431/CodeSmith.git"
+else
+    REPO_URL="$REPO_HTTPS"
+fi
+
 if [ -d "$SRC_DIR/.git" ]; then
     echo "[codesmith] Updating from branch $BRANCH…"
+    # Rewrite remote URL in case token changed
+    git -C "$SRC_DIR" remote set-url origin "$REPO_URL"
     git -C "$SRC_DIR" fetch --quiet origin
     git -C "$SRC_DIR" checkout --quiet "$BRANCH"
     git -C "$SRC_DIR" pull --quiet --ff-only origin "$BRANCH"
 else
     echo "[codesmith] Cloning branch $BRANCH…"
-    git clone --branch "$BRANCH" --single-branch "$REPO" "$SRC_DIR"
+    git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$SRC_DIR"
 fi
 
 # ── Python venv ───────────────────────────────────────────────────────────────
