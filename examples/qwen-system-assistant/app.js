@@ -8,7 +8,7 @@ const os = require('os');
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 8091);
-const OLLAMA_HOST = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+const OLLAMA_HOST = (process.env.OLLAMA_HOST || 'http://100.98.112.1:11434').replace(/\/+$/, '');
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder:0.5b';
 const OLLAMA_REQUEST_TIMEOUT_MS = Number(process.env.OLLAMA_REQUEST_TIMEOUT_MS || 10 * 60 * 1000);
 const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX || 8192);
@@ -18,6 +18,18 @@ const MAX_MODEL_CONTEXT_CHARS = Number(process.env.MAX_MODEL_CONTEXT_CHARS || 24
 const MAX_FILE_SCAN_DEPTH = 8;
 const MAX_FILE_SCAN_ENTRIES = 500;
 const MAX_FILE_SCAN_VISITED = 5000;
+
+const SSH_USER = process.env.SSH_USER || 'tj';
+const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10'];
+
+const DEVICES = [
+  { id: 'local', name: 'Local (this machine)', host: null, platform: 'linux' },
+  { id: 'desktop-glpggos', name: 'desktop-glpggos (Windows)', host: '100.98.112.1', platform: 'windows' },
+  { id: 'pi5', name: 'pi5 (Raspberry Pi)', host: '100.64.69.114', platform: 'linux' },
+  { id: 'tj-jetson-desktop', name: 'tj-jetson-desktop (Jetson)', host: '100.83.4.72', platform: 'linux' },
+  { id: 'tj-nucboxg3-plus', name: 'tj-nucboxg3-plus (NucBox)', host: '100.92.90.118', platform: 'linux' },
+  { id: 'thomass-z-fold6', name: 'thomass-z-fold6 (Android)', host: '100.75.197.117', platform: 'android' }
+];
 
 function sendJson(res, status, data) {
   const body = JSON.stringify(data, null, 2);
@@ -39,6 +51,66 @@ function command(label, file, args, timeout = 5000) {
       });
     });
   });
+}
+
+function sshCommand(label, host, remoteCmd, timeout = 10000) {
+  return new Promise((resolve) => {
+    execFile('ssh', [...SSH_OPTS, `${SSH_USER}@${host}`, remoteCmd], { timeout, maxBuffer: 1024 * 512 }, (error, stdout, stderr) => {
+      resolve({
+        label,
+        command: remoteCmd,
+        ok: !error,
+        output: String(stdout || stderr || error?.message || '').slice(0, MAX_OUTPUT)
+      });
+    });
+  });
+}
+
+async function collectSshSystemContext(host) {
+  const checks = await Promise.all([
+    sshCommand('Disk usage', host, 'df -h -x tmpfs -x devtmpfs 2>/dev/null', 8000),
+    sshCommand('Block devices', host, 'lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS,MODEL 2>/dev/null || echo "lsblk unavailable"', 8000),
+    sshCommand('Top memory processes', host, "ps -eo pid,ppid,comm,%mem,%cpu,args --sort=-%mem 2>/dev/null | head -40 || ps aux 2>/dev/null | head -40", 8000),
+    sshCommand('Network addresses', host, 'ip -brief addr 2>/dev/null || ifconfig 2>/dev/null | head -60', 8000),
+    sshCommand('Listening TCP/UDP services', host, 'ss -tulpn 2>/dev/null || netstat -tulpn 2>/dev/null | head -40', 8000),
+    sshCommand('Recent journal errors', host, 'journalctl -p 3 -n 50 --no-pager 2>/dev/null || dmesg --level=err,crit,alert,emerg 2>/dev/null | tail -50', 10000),
+    sshCommand('System info', host, 'uname -a && uptime && free -h 2>/dev/null', 8000)
+  ]);
+  return { collectedAt: new Date().toISOString(), remoteHost: host, checks };
+}
+
+async function collectSshFileScan(host, remotePath, depth) {
+  const safeDepth = clampDepth(depth);
+  const findCmd = `find ${remotePath} -maxdepth ${safeDepth} -printf '%P\\t%y\\t%s\\t%T@\\t%#m\\n' 2>/dev/null | head -600`;
+  const raw = await sshCommand('File scan', host, findCmd, 20000);
+
+  const entries = [];
+  let files = 0, directories = 0, totalFileBytes = 0;
+  for (const line of raw.output.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    if (parts.length < 3) continue;
+    const [relPath, typeChar, sizeStr, mtimeStr, mode] = parts;
+    const type = typeChar === 'd' ? 'directory' : typeChar === 'f' ? 'file' : typeChar === 'l' ? 'symlink' : 'other';
+    const sizeBytes = Number(sizeStr) || 0;
+    const modifiedAt = mtimeStr ? new Date(Number(mtimeStr) * 1000).toISOString() : null;
+    if (type === 'file') { files++; totalFileBytes += sizeBytes; }
+    if (type === 'directory') directories++;
+    entries.push({ path: relPath || '.', type, sizeBytes, modifiedAt, mode: (mode || '').trim() });
+  }
+
+  const fileEntries = entries.filter(e => e.type === 'file');
+  return {
+    root: remotePath,
+    remoteHost: host,
+    maxDepth: safeDepth,
+    collectedAt: new Date().toISOString(),
+    summary: { files, directories, totalFileBytes, visited: entries.length, truncated: entries.length >= 500 },
+    entries: entries.slice(0, MAX_FILE_SCAN_ENTRIES),
+    largestFiles: [...fileEntries].sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, 20),
+    recentlyModified: [...fileEntries].sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt)).slice(0, 20),
+    errors: raw.ok ? [] : [{ message: raw.output }]
+  };
 }
 
 function clampDepth(value) {
@@ -195,6 +267,7 @@ function html() {
   const defaultFilePath = escapeHtml(os.homedir());
   const ollamaModel = escapeHtml(OLLAMA_MODEL);
   const ollamaHost = escapeHtml(OLLAMA_HOST);
+  const devicesJson = JSON.stringify(DEVICES);
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -202,31 +275,48 @@ function html() {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Qwen System Assistant</title>
 <style>
-body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#111827;color:#e5e7eb}main{max-width:1100px;margin:0 auto;padding:24px}.card{background:#1f2937;border:1px solid #374151;border-radius:14px;padding:18px;margin:16px 0}button{background:#2563eb;color:white;border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}input{border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:10px}input[type=text]{min-width:320px}textarea{width:100%;min-height:130px;border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:12px}pre{white-space:pre-wrap;overflow:auto;background:#0b1020;border-radius:10px;padding:14px}.muted{color:#9ca3af}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}</style>
+body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#111827;color:#e5e7eb}main{max-width:1100px;margin:0 auto;padding:24px}.card{background:#1f2937;border:1px solid #374151;border-radius:14px;padding:18px;margin:16px 0}button{background:#2563eb;color:white;border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}input,select{border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:10px}input[type=text]{min-width:280px}select{min-width:280px;cursor:pointer}textarea{width:100%;min-height:130px;border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:12px}pre{white-space:pre-wrap;overflow:auto;background:#0b1020;border-radius:10px;padding:14px}.muted{color:#9ca3af}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.badge{background:#374151;border-radius:6px;padding:2px 8px;font-size:.8em;color:#9ca3af}</style>
 </head>
 <body><main>
 <h1>Qwen System Assistant</h1>
-<p class="muted">Collect read-only Linux context and ask <code>${ollamaModel}</code> through Ollama at <code>${ollamaHost}</code>. Prompts are compacted for smaller local models, and long model runs are streamed from Ollama so slow responses do not look like a failed fetch.</p>
+<p class="muted">Collect read-only system context and ask <code>${ollamaModel}</code> through Ollama at <code>${ollamaHost}</code>. Prompts are compacted for smaller local models.</p>
+<div class="card">
+  <h2 style="margin-top:0">Device</h2>
+  <div class="row">
+    <select id="device"></select>
+    <span id="deviceInfo" class="muted"></span>
+  </div>
+  <p class="muted" style="margin-bottom:0">Select a Tailscale device to scan via SSH, or scan the local machine directly.</p>
+</div>
 <div class="card">
   <div class="row"><button id="scan">Scan System</button><button id="ask">Send to AI</button><span id="status" class="muted">Idle</span></div>
-  <p class="muted">The scan gathers disk, process, network, journal, and large-file summaries using allow-listed commands.</p>
+  <p class="muted">Gathers disk, process, network, journal, and system info. Remote devices are scanned via SSH.</p>
 </div>
 <div class="card">
   <h2>File Scan</h2>
   <div class="row"><label>Path <input id="filePath" type="text" value="${defaultFilePath}"></label><label>Depth <input id="fileDepth" type="number" min="0" max="${MAX_FILE_SCAN_DEPTH}" value="2"></label><button id="fileScan">Scan Files</button></div>
-  <p class="muted">Scans file names and metadata only. Depth 0 scans just the selected path; higher depths include child directories up to ${MAX_FILE_SCAN_DEPTH} levels.</p>
+  <p class="muted">Scans file names and metadata only. For remote devices, uses SSH + <code>find</code>. Depth 0 = selected path only; up to ${MAX_FILE_SCAN_DEPTH} levels.</p>
 </div>
 <div class="card"><h2>Question</h2><textarea id="prompt">Review this compact Linux system summary. List the top 3 risks or issues and give safe next-step commands. Be concise.</textarea></div>
 <div class="card"><h2>Collected Context</h2><pre id="context">No scan yet.</pre></div>
 <div class="card"><h2>AI Analysis</h2><pre id="answer">No analysis yet.</pre></div>
 <script>
+const DEVICES=${devicesJson};
 let context=null;
 let fileScan=null;
 const statusEl=document.getElementById('status');
-async function api(path, body){const res=await fetch(path,{method:body?'POST':'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});const text=await res.text();let data;try{data=text?JSON.parse(text):{};}catch(e){data={error:text||res.statusText};}if(!res.ok)throw new Error(data.error||text||res.statusText);return data;}
-document.getElementById('scan').onclick=async()=>{statusEl.textContent='Scanning…';try{context=await api('/api/scan');document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='Scan complete';}catch(e){statusEl.textContent='Scan failed';document.getElementById('context').textContent=e.message;}};
-document.getElementById('fileScan').onclick=async()=>{const root=encodeURIComponent(document.getElementById('filePath').value);const depth=encodeURIComponent(document.getElementById('fileDepth').value);statusEl.textContent='Scanning files…';try{fileScan=await api('/api/file-scan?path='+root+'&depth='+depth);document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='File scan complete';}catch(e){statusEl.textContent='File scan failed';document.getElementById('context').textContent=e.message;}};
-document.getElementById('ask').onclick=async()=>{const askButton=document.getElementById('ask');askButton.disabled=true;statusEl.textContent='Asking AI… this can take several minutes on local models';document.getElementById('answer').textContent='Waiting for model response…';try{if(!context&&!fileScan)context=await api('/api/scan');const result=await api('/api/analyze',{prompt:document.getElementById('prompt').value,context:{system:context,fileScan}});document.getElementById('answer').textContent=result.response||JSON.stringify(result,null,2);statusEl.textContent='Analysis complete';}catch(e){statusEl.textContent='AI request failed';document.getElementById('answer').textContent=e.message;}finally{askButton.disabled=false;}};
+const deviceSel=document.getElementById('device');
+const deviceInfo=document.getElementById('deviceInfo');
+
+DEVICES.forEach(d=>{const opt=document.createElement('option');opt.value=d.id;opt.textContent=d.name;deviceSel.appendChild(opt);});
+function getDevice(){return DEVICES.find(d=>d.id===deviceSel.value)||DEVICES[0];}
+function deviceParam(){const d=getDevice();return d.id==='local'?'':'&device='+encodeURIComponent(d.id);}
+deviceSel.onchange=()=>{const d=getDevice();deviceInfo.textContent=d.host?'SSH: '+d.host:'';if(d.platform==='android')statusEl.textContent='Android not supported for scanning';};
+
+async function api(path,body){const res=await fetch(path,{method:body?'POST':'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});const text=await res.text();let data;try{data=text?JSON.parse(text):{};}catch(e){data={error:text||res.statusText};}if(!res.ok)throw new Error(data.error||text||res.statusText);return data;}
+document.getElementById('scan').onclick=async()=>{const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH scanning not supported';return;}statusEl.textContent='Scanning'+(d.id!=='local'?' '+d.name+' via SSH':'')+'…';try{context=await api('/api/scan?'+deviceParam());document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='Scan complete';}catch(e){statusEl.textContent='Scan failed';document.getElementById('context').textContent=e.message;}};
+document.getElementById('fileScan').onclick=async()=>{const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH scanning not supported';return;}const root=encodeURIComponent(document.getElementById('filePath').value);const depth=encodeURIComponent(document.getElementById('fileDepth').value);statusEl.textContent='Scanning files'+(d.id!=='local'?' on '+d.name+' via SSH':'')+'…';try{fileScan=await api('/api/file-scan?path='+root+'&depth='+depth+deviceParam());document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='File scan complete';}catch(e){statusEl.textContent='File scan failed';document.getElementById('context').textContent=e.message;}};
+document.getElementById('ask').onclick=async()=>{const askButton=document.getElementById('ask');askButton.disabled=true;statusEl.textContent='Asking AI… this can take several minutes on local models';document.getElementById('answer').textContent='Waiting for model response…';try{if(!context&&!fileScan)context=await api('/api/scan?'+deviceParam());const result=await api('/api/analyze',{prompt:document.getElementById('prompt').value,context:{system:context,fileScan}});document.getElementById('answer').textContent=result.response||JSON.stringify(result,null,2);statusEl.textContent='Analysis complete';}catch(e){statusEl.textContent='AI request failed';document.getElementById('answer').textContent=e.message;}finally{askButton.disabled=false;}};
 </script></main></body></html>`;
 }
 
@@ -388,6 +478,15 @@ async function analyze(prompt, context) {
   return generateWithModel(OLLAMA_MODEL, prompt, context);
 }
 
+function resolveDevice(deviceId) {
+  if (!deviceId || deviceId === 'local') return null;
+  const device = DEVICES.find(d => d.id === deviceId);
+  if (!device) throw new Error(`Unknown device: ${deviceId}`);
+  if (device.platform === 'android') throw new Error(`Android device ${device.name} is not supported for SSH scanning`);
+  if (!device.host) return null;
+  return device;
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/') {
@@ -395,17 +494,24 @@ const server = http.createServer(async (req, res) => {
       res.end(html());
       return;
     }
-    if (req.method === 'GET' && req.url === '/api/scan') {
-      sendJson(res, 200, await collectSystemContext());
+    if (req.method === 'GET' && req.url === '/api/devices') {
+      sendJson(res, 200, { devices: DEVICES });
+      return;
+    }
+    if (req.method === 'GET' && req.url.startsWith('/api/scan')) {
+      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      if (url.pathname !== '/api/scan') { sendJson(res, 404, { error: 'Not found' }); return; }
+      const device = resolveDevice(url.searchParams.get('device'));
+      sendJson(res, 200, device ? await collectSshSystemContext(device.host) : await collectSystemContext());
       return;
     }
     if (req.method === 'GET' && req.url.startsWith('/api/file-scan')) {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-      if (url.pathname !== '/api/file-scan') {
-        sendJson(res, 404, { error: 'Not found' });
-        return;
-      }
-      sendJson(res, 200, await scanFiles(url.searchParams.get('path') || os.homedir(), url.searchParams.get('depth') || 2));
+      if (url.pathname !== '/api/file-scan') { sendJson(res, 404, { error: 'Not found' }); return; }
+      const device = resolveDevice(url.searchParams.get('device'));
+      const scanPath = url.searchParams.get('path') || os.homedir();
+      const depth = url.searchParams.get('depth') || 2;
+      sendJson(res, 200, device ? await collectSshFileScan(device.host, scanPath, depth) : await scanFiles(scanPath, depth));
       return;
     }
     if (req.method === 'POST' && req.url === '/api/analyze') {

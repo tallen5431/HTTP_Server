@@ -58,13 +58,14 @@ function getBundledQwenSystemAssistantProgram() {
     env: {
       HOST: '0.0.0.0',
       PORT: '8091',
-      OLLAMA_HOST: 'http://127.0.0.1:11434',
+      OLLAMA_HOST: 'http://100.98.112.1:11434',
       OLLAMA_MODEL: 'qwen2.5-coder:0.5b',
       OLLAMA_NUM_CTX: '8192',
       OLLAMA_NUM_PREDICT: '512',
-      MAX_MODEL_CONTEXT_CHARS: '24000'
+      MAX_MODEL_CONTEXT_CHARS: '24000',
+      SSH_USER: 'tj'
     },
-    comment: 'Bundled local AI assistant card. Collects read-only Linux system context and sends a compact prompt to Ollama for analysis. Run "ollama pull qwen2.5-coder:0.5b" or set OLLAMA_MODEL to any installed model.'
+    comment: 'Bundled local AI assistant card. Connects to Ollama on desktop-glpggos via Tailscale (100.98.112.1:11434). Use the device selector in the UI to SSH into pi5, Jetson, or NucBox for remote system/file scans.'
   };
 }
 
