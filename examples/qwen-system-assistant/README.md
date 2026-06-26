@@ -23,17 +23,18 @@ ollama pull qwen2.5-coder:0.5b
 - `MAX_MODEL_CONTEXT_CHARS` - maximum compacted JSON context sent to the model, default `24000`
 
 - `SSH_USER` - SSH username for remote device scanning, default `tj`
+- `SSH_BATCH_MODE` - keep SSH non-interactive by default. Set to `0` only when you run the app in a terminal and want SSH to prompt for a password.
 
 The system scan endpoint runs an allow-listed set of read-only commands with short timeouts. It does not make filesystem changes. AI analysis compacts scan results before sending them to Ollama, caps generated output for concise responses, and uses Ollama's streaming API internally so the app receives model output incrementally instead of waiting silently for a single long response. If a local model is still too slow, raise `OLLAMA_REQUEST_TIMEOUT_MS`, lower `MAX_MODEL_CONTEXT_CHARS`, or choose a smaller installed model.
 
 ## Remote device scanning
 
-A device selector at the top of the UI lets you pick from your Tailscale devices. Selecting a remote device runs system scans and file scans via SSH using `BatchMode` (no password prompts). The NucBox server must have SSH access to the target device (key-based auth). Android devices are listed but not supported for scanning.
+A device selector at the top of the UI lets you pick from your Tailscale devices. Selecting a remote device runs system scans and file scans via SSH using `BatchMode` (no password prompts). The NucBox server must have SSH access to the target device (key-based auth). Android devices are listed but not supported for scanning. If a scan returns `Permission denied (publickey,password)`, Tailscale is routing to the device but SSH authentication failed: verify `SSH_USER`, make sure the target account exists, and install the server's public key in that account's `~/.ssh/authorized_keys`.
 
 
 ## File scan
 
-Use the **File Scan** card to collect read-only file and directory metadata for a selected path before asking the AI. Set the depth to control how far below the selected path the scan walks:
+Use the **File Scan** card to collect read-only file and directory metadata for a selected path before asking the AI. Click **Browse** to list child folders for the current path, click a folder to navigate into it, or use **Up** / **Home** to move around before scanning. Set the depth to control how far below the selected path the scan walks:
 
 - `0` scans only the selected path.
 - `1` includes direct children.

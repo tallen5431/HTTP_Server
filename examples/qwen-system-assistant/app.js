@@ -20,7 +20,12 @@ const MAX_FILE_SCAN_ENTRIES = 500;
 const MAX_FILE_SCAN_VISITED = 5000;
 
 const SSH_USER = process.env.SSH_USER || 'tj';
-const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10'];
+const SSH_BATCH_MODE = process.env.SSH_BATCH_MODE !== '0';
+const SSH_OPTS = [
+  ...(SSH_BATCH_MODE ? ['-o', 'BatchMode=yes'] : []),
+  '-o', 'StrictHostKeyChecking=accept-new',
+  '-o', 'ConnectTimeout=10'
+];
 
 const DEVICES = [
   { id: 'local', name: 'Local (this machine)', host: null, platform: 'linux' },
@@ -53,14 +58,29 @@ function command(label, file, args, timeout = 5000) {
   });
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function sshPermissionHelp(output) {
+  if (!/Permission denied/i.test(output || '')) return null;
+  return [
+    `SSH authentication failed for ${SSH_USER}.`,
+    'Tailscale provides network reachability, but SSH still requires a valid Linux account and SSH credentials on the target device.',
+    'Install this server\'s public key in ~/.ssh/authorized_keys on the target, set SSH_USER to the correct remote username, or set SSH_BATCH_MODE=0 if you intentionally want interactive password prompts in a terminal-run instance.'
+  ].join(' ');
+}
+
 function sshCommand(label, host, remoteCmd, timeout = 10000) {
   return new Promise((resolve) => {
     execFile('ssh', [...SSH_OPTS, `${SSH_USER}@${host}`, remoteCmd], { timeout, maxBuffer: 1024 * 512 }, (error, stdout, stderr) => {
+      const output = String(stdout || stderr || error?.message || '').slice(0, MAX_OUTPUT);
       resolve({
         label,
         command: remoteCmd,
         ok: !error,
-        output: String(stdout || stderr || error?.message || '').slice(0, MAX_OUTPUT)
+        output,
+        help: sshPermissionHelp(output)
       });
     });
   });
@@ -81,7 +101,7 @@ async function collectSshSystemContext(host) {
 
 async function collectSshFileScan(host, remotePath, depth) {
   const safeDepth = clampDepth(depth);
-  const findCmd = `find ${remotePath} -maxdepth ${safeDepth} -printf '%P\\t%y\\t%s\\t%T@\\t%#m\\n' 2>/dev/null | head -600`;
+  const findCmd = `find ${shellQuote(remotePath)} -maxdepth ${safeDepth} -printf '%P\\t%y\\t%s\\t%T@\\t%#m\\n' 2>/dev/null | head -600`;
   const raw = await sshCommand('File scan', host, findCmd, 20000);
 
   const entries = [];
@@ -109,7 +129,7 @@ async function collectSshFileScan(host, remotePath, depth) {
     entries: entries.slice(0, MAX_FILE_SCAN_ENTRIES),
     largestFiles: [...fileEntries].sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, 20),
     recentlyModified: [...fileEntries].sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt)).slice(0, 20),
-    errors: raw.ok ? [] : [{ message: raw.output }]
+    errors: raw.ok ? [] : [{ message: raw.output, help: raw.help }]
   };
 }
 
@@ -123,6 +143,40 @@ function rememberTop(list, entry, scoreKey, limit = 20) {
   list.push(entry);
   list.sort((a, b) => b[scoreKey] - a[scoreKey]);
   if (list.length > limit) list.length = limit;
+}
+
+
+async function browseSshDirectories(host, remotePath) {
+  const root = remotePath || '/';
+  const cmd = `find ${shellQuote(root)} -mindepth 1 -maxdepth 1 -type d -printf '%f\t%p\n' 2>/dev/null | sort | head -200`;
+  const raw = await sshCommand('Directory browse', host, cmd, 10000);
+  const directories = raw.output.split('\n').filter(Boolean).map((line) => {
+    const [name, fullPath] = line.split('\t');
+    return { name, path: fullPath || name };
+  });
+  return {
+    root,
+    remoteHost: host,
+    parent: root === '/' ? null : path.posix.dirname(root.replace(/\/+$/, '') || '/'),
+    directories,
+    errors: raw.ok ? [] : [{ message: raw.output, help: raw.help }]
+  };
+}
+
+async function browseLocalDirectories(rootPath) {
+  const root = path.resolve(rootPath || os.homedir());
+  const directories = [];
+  const errors = [];
+  try {
+    const children = await fs.readdir(root, { withFileTypes: true });
+    for (const child of children) {
+      if (child.isDirectory()) directories.push({ name: child.name, path: path.join(root, child.name) });
+    }
+    directories.sort((a, b) => a.name.localeCompare(b.name));
+  } catch (error) {
+    errors.push({ path: root, message: error.message });
+  }
+  return { root, parent: path.dirname(root) === root ? null : path.dirname(root), directories: directories.slice(0, 200), errors };
 }
 
 async function scanFiles(rootPath, requestedDepth = 2) {
@@ -275,7 +329,7 @@ function html() {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Qwen System Assistant</title>
 <style>
-body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#111827;color:#e5e7eb}main{max-width:1100px;margin:0 auto;padding:24px}.card{background:#1f2937;border:1px solid #374151;border-radius:14px;padding:18px;margin:16px 0}button{background:#2563eb;color:white;border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}input,select{border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:10px}input[type=text]{min-width:280px}select{min-width:280px;cursor:pointer}textarea{width:100%;min-height:130px;border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:12px}pre{white-space:pre-wrap;overflow:auto;background:#0b1020;border-radius:10px;padding:14px}.muted{color:#9ca3af}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.badge{background:#374151;border-radius:6px;padding:2px 8px;font-size:.8em;color:#9ca3af}</style>
+body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#111827;color:#e5e7eb}main{max-width:1100px;margin:0 auto;padding:24px}.card{background:#1f2937;border:1px solid #374151;border-radius:14px;padding:18px;margin:16px 0}button{background:#2563eb;color:white;border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}input,select{border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:10px}input[type=text]{min-width:280px}select{min-width:280px;cursor:pointer}textarea{width:100%;min-height:130px;border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:12px}pre{white-space:pre-wrap;overflow:auto;background:#0b1020;border-radius:10px;padding:14px}.muted{color:#9ca3af}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.badge{background:#374151;border-radius:6px;padding:2px 8px;font-size:.8em;color:#9ca3af}.browser{margin-top:12px;border:1px solid #374151;border-radius:10px;padding:10px;max-height:220px;overflow:auto}.dir{display:block;width:100%;text-align:left;background:#374151;margin:6px 0}.help{color:#fbbf24}</style>
 </head>
 <body><main>
 <h1>Qwen System Assistant</h1>
@@ -294,7 +348,8 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background
 </div>
 <div class="card">
   <h2>File Scan</h2>
-  <div class="row"><label>Path <input id="filePath" type="text" value="${defaultFilePath}"></label><label>Depth <input id="fileDepth" type="number" min="0" max="${MAX_FILE_SCAN_DEPTH}" value="2"></label><button id="fileScan">Scan Files</button></div>
+  <div class="row"><label>Path <input id="filePath" type="text" value="${defaultFilePath}"></label><label>Depth <input id="fileDepth" type="number" min="0" max="${MAX_FILE_SCAN_DEPTH}" value="2"></label><button id="browseFiles">Browse</button><button id="fileUp">Up</button><button id="fileHome">Home</button><button id="fileScan">Scan Files</button></div>
+  <div id="fileBrowser" class="browser muted">Click Browse to list child folders for the selected path.</div>
   <p class="muted">Scans file names and metadata only. For remote devices, uses SSH + <code>find</code>. Depth 0 = selected path only; up to ${MAX_FILE_SCAN_DEPTH} levels.</p>
 </div>
 <div class="card"><h2>Question</h2><textarea id="prompt">Review this compact Linux system summary. List the top 3 risks or issues and give safe next-step commands. Be concise.</textarea></div>
@@ -314,6 +369,11 @@ function deviceParam(){const d=getDevice();return d.id==='local'?'':'&device='+e
 deviceSel.onchange=()=>{const d=getDevice();deviceInfo.textContent=d.host?'SSH: '+d.host:'';if(d.platform==='android')statusEl.textContent='Android not supported for scanning';};
 
 async function api(path,body){const res=await fetch(path,{method:body?'POST':'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});const text=await res.text();let data;try{data=text?JSON.parse(text):{};}catch(e){data={error:text||res.statusText};}if(!res.ok)throw new Error(data.error||text||res.statusText);return data;}
+async function browseFiles(pathOverride){const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH browsing not supported';return;}const input=document.getElementById('filePath');const root=encodeURIComponent(pathOverride||input.value);statusEl.textContent='Browsing folders'+(d.id!=='local'?' on '+d.name+' via SSH':'')+'…';try{const data=await api('/api/file-browse?path='+root+deviceParam());input.value=data.root;renderBrowser(data);statusEl.textContent='Folder browse complete';}catch(e){statusEl.textContent='Folder browse failed';document.getElementById('fileBrowser').textContent=e.message;}}
+function renderBrowser(data){const box=document.getElementById('fileBrowser');box.innerHTML='';if(data.errors&&data.errors.length){const p=document.createElement('p');p.className='help';p.textContent=(data.errors[0].help||data.errors[0].message);box.appendChild(p);}const meta=document.createElement('p');meta.className='muted';meta.textContent=(data.directories||[]).length+' folders under '+data.root;box.appendChild(meta);(data.directories||[]).forEach(dir=>{const b=document.createElement('button');b.className='dir';b.textContent='📁 '+dir.name;b.onclick=()=>browseFiles(dir.path);box.appendChild(b);});box.dataset.parent=data.parent||'';}
+document.getElementById('browseFiles').onclick=()=>browseFiles();
+document.getElementById('fileUp').onclick=()=>{const parent=document.getElementById('fileBrowser').dataset.parent;if(parent)browseFiles(parent);};
+document.getElementById('fileHome').onclick=()=>{document.getElementById('filePath').value='${defaultFilePath}';browseFiles('${defaultFilePath}');};
 document.getElementById('scan').onclick=async()=>{const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH scanning not supported';return;}statusEl.textContent='Scanning'+(d.id!=='local'?' '+d.name+' via SSH':'')+'…';try{context=await api('/api/scan?'+deviceParam());document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='Scan complete';}catch(e){statusEl.textContent='Scan failed';document.getElementById('context').textContent=e.message;}};
 document.getElementById('fileScan').onclick=async()=>{const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH scanning not supported';return;}const root=encodeURIComponent(document.getElementById('filePath').value);const depth=encodeURIComponent(document.getElementById('fileDepth').value);statusEl.textContent='Scanning files'+(d.id!=='local'?' on '+d.name+' via SSH':'')+'…';try{fileScan=await api('/api/file-scan?path='+root+'&depth='+depth+deviceParam());document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='File scan complete';}catch(e){statusEl.textContent='File scan failed';document.getElementById('context').textContent=e.message;}};
 document.getElementById('ask').onclick=async()=>{const askButton=document.getElementById('ask');askButton.disabled=true;statusEl.textContent='Asking AI… this can take several minutes on local models';document.getElementById('answer').textContent='Waiting for model response…';try{if(!context&&!fileScan)context=await api('/api/scan?'+deviceParam());const result=await api('/api/analyze',{prompt:document.getElementById('prompt').value,context:{system:context,fileScan}});document.getElementById('answer').textContent=result.response||JSON.stringify(result,null,2);statusEl.textContent='Analysis complete';}catch(e){statusEl.textContent='AI request failed';document.getElementById('answer').textContent=e.message;}finally{askButton.disabled=false;}};
@@ -503,6 +563,14 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname !== '/api/scan') { sendJson(res, 404, { error: 'Not found' }); return; }
       const device = resolveDevice(url.searchParams.get('device'));
       sendJson(res, 200, device ? await collectSshSystemContext(device.host) : await collectSystemContext());
+      return;
+    }
+    if (req.method === 'GET' && req.url.startsWith('/api/file-browse')) {
+      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      if (url.pathname !== '/api/file-browse') { sendJson(res, 404, { error: 'Not found' }); return; }
+      const device = resolveDevice(url.searchParams.get('device'));
+      const browsePath = url.searchParams.get('path') || os.homedir();
+      sendJson(res, 200, device ? await browseSshDirectories(device.host, browsePath) : await browseLocalDirectories(browsePath));
       return;
     }
     if (req.method === 'GET' && req.url.startsWith('/api/file-scan')) {
