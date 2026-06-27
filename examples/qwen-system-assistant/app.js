@@ -480,6 +480,13 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background
   <p class="muted">Gathers disk, process, network, journal, and system info. Remote devices are scanned via SSH.</p>
 </div>
 <div class="card">
+  <h2>Ollama Models</h2>
+  <div class="row"><label>Active model <select id="ollamaModel"><option value="${ollamaModel}">${ollamaModel}</option></select></label><button id="refreshModels">Refresh Models</button><button id="deleteModel">Delete Selected</button></div>
+  <div class="row"><label>Pull model <input id="pullModelName" type="text" placeholder="llama3.1:8b"></label><button id="pullModel">Pull Model</button></div>
+  <pre id="modelList">Click Refresh Models to list Ollama models on ${ollamaHost}.</pre>
+  <p class="muted">Lists, selects, pulls, and deletes models from the Ollama server on desktop-glpggos. Delete only removes the selected local model.</p>
+</div>
+<div class="card">
   <h2>File Scan</h2>
   <div class="row"><label>Path <input id="filePath" type="text" value="${defaultFilePath}"></label><label>Depth <input id="fileDepth" type="number" min="0" max="${MAX_FILE_SCAN_DEPTH}" value="2"></label><button id="browseFiles">Browse</button><button id="fileUp">Up</button><button id="fileHome">Home</button><button id="fileScan">Scan Files</button></div>
   <div id="fileBrowser" class="browser muted">Click Browse to list child folders for the selected path.</div>
@@ -502,6 +509,14 @@ function deviceParam(){const d=getDevice();return d.id==='local'?'':'&device='+e
 deviceSel.onchange=()=>{const d=getDevice();deviceInfo.textContent=d.host?'SSH: '+d.host:'';if(d.fileRoot)document.getElementById('filePath').value=d.fileRoot;if(d.platform==='android')statusEl.textContent='Android not supported for scanning';};
 
 async function api(path,body){const res=await fetch(path,{method:body?'POST':'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});const text=await res.text();let data;try{data=text?JSON.parse(text):{};}catch(e){data={error:text||res.statusText};}if(!res.ok)throw new Error(data.error||text||res.statusText);return data;}
+const ollamaModelSel=document.getElementById('ollamaModel');
+function renderModels(data){const models=data.models||[];const active=ollamaModelSel.value||data.defaultModel||'${ollamaModel}';ollamaModelSel.innerHTML='';if(!models.some(m=>m.name===active)){const opt=document.createElement('option');opt.value=active;opt.textContent=active;ollamaModelSel.appendChild(opt);}models.forEach(m=>{const opt=document.createElement('option');opt.value=m.name;opt.textContent=m.name+(m.size?' ('+formatBytes(m.size)+')':'');ollamaModelSel.appendChild(opt);});ollamaModelSel.value=active;document.getElementById('modelList').textContent=JSON.stringify(data,null,2);}
+function formatBytes(bytes){const n=Number(bytes)||0;if(!n)return '';const units=['B','KB','MB','GB','TB'];let value=n;let i=0;while(value>=1024&&i<units.length-1){value/=1024;i++;}return value.toFixed(value>=10||i===0?0:1)+' '+units[i];}
+async function refreshModels(){statusEl.textContent='Refreshing Ollama models…';try{const data=await api('/api/ollama/models');renderModels(data);statusEl.textContent='Model list refreshed';}catch(e){statusEl.textContent='Model refresh failed';document.getElementById('modelList').textContent=e.message;}}
+document.getElementById('refreshModels').onclick=refreshModels;
+document.getElementById('pullModel').onclick=async()=>{const name=document.getElementById('pullModelName').value.trim();if(!name){statusEl.textContent='Enter a model name to pull';return;}statusEl.textContent='Pulling '+name+'…';try{const data=await api('/api/ollama/pull',{name});document.getElementById('modelList').textContent=JSON.stringify(data,null,2);await refreshModels();statusEl.textContent='Pulled '+name;}catch(e){statusEl.textContent='Pull failed';document.getElementById('modelList').textContent=e.message;}};
+document.getElementById('deleteModel').onclick=async()=>{const name=ollamaModelSel.value;if(!name){statusEl.textContent='Select a model to delete';return;}if(!confirm('Delete Ollama model '+name+' from desktop-glpggos?'))return;statusEl.textContent='Deleting '+name+'…';try{const data=await api('/api/ollama/delete',{name});document.getElementById('modelList').textContent=JSON.stringify(data,null,2);await refreshModels();statusEl.textContent='Deleted '+name;}catch(e){statusEl.textContent='Delete failed';document.getElementById('modelList').textContent=e.message;}};
+refreshModels();
 async function browseFiles(pathOverride){const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH browsing not supported';return;}const input=document.getElementById('filePath');const root=encodeURIComponent(pathOverride||input.value);statusEl.textContent='Browsing folders'+(d.id!=='local'?' on '+d.name+' via SSH':'')+'…';try{const data=await api('/api/file-browse?path='+root+deviceParam());input.value=data.root;renderBrowser(data);statusEl.textContent='Folder browse complete';}catch(e){statusEl.textContent='Folder browse failed';document.getElementById('fileBrowser').textContent=e.message;}}
 function renderBrowser(data){const box=document.getElementById('fileBrowser');box.innerHTML='';if(data.errors&&data.errors.length){const p=document.createElement('p');p.className='help';p.textContent=(data.errors[0].help||data.errors[0].message);box.appendChild(p);}const meta=document.createElement('p');meta.className='muted';meta.textContent=(data.directories||[]).length+' folders under '+data.root;box.appendChild(meta);(data.directories||[]).forEach(dir=>{const b=document.createElement('button');b.className='dir';b.textContent='📁 '+dir.name;b.onclick=()=>browseFiles(dir.path);box.appendChild(b);});box.dataset.parent=data.parent||'';}
 document.getElementById('browseFiles').onclick=()=>browseFiles();
@@ -509,7 +524,7 @@ document.getElementById('fileUp').onclick=()=>{const parent=document.getElementB
 document.getElementById('fileHome').onclick=()=>{document.getElementById('filePath').value='${defaultFilePath}';browseFiles('${defaultFilePath}');};
 document.getElementById('scan').onclick=async()=>{const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH scanning not supported';return;}statusEl.textContent='Scanning'+(d.id!=='local'?' '+d.name+' via SSH':'')+'…';try{context=await api('/api/scan?'+deviceParam());document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='Scan complete';}catch(e){statusEl.textContent='Scan failed';document.getElementById('context').textContent=e.message;}};
 document.getElementById('fileScan').onclick=async()=>{const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH scanning not supported';return;}const root=encodeURIComponent(document.getElementById('filePath').value);const depth=encodeURIComponent(document.getElementById('fileDepth').value);statusEl.textContent='Scanning files'+(d.id!=='local'?' on '+d.name+' via SSH':'')+'…';try{fileScan=await api('/api/file-scan?path='+root+'&depth='+depth+deviceParam());document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='File scan complete';}catch(e){statusEl.textContent='File scan failed';document.getElementById('context').textContent=e.message;}};
-document.getElementById('ask').onclick=async()=>{const askButton=document.getElementById('ask');askButton.disabled=true;statusEl.textContent='Asking AI… this can take several minutes on local models';document.getElementById('answer').textContent='Waiting for model response…';try{if(!context&&!fileScan)context=await api('/api/scan?'+deviceParam());const result=await api('/api/analyze',{prompt:document.getElementById('prompt').value,context:{system:context,fileScan}});document.getElementById('answer').textContent=result.response||JSON.stringify(result,null,2);statusEl.textContent='Analysis complete';}catch(e){statusEl.textContent='AI request failed';document.getElementById('answer').textContent=e.message;}finally{askButton.disabled=false;}};
+document.getElementById('ask').onclick=async()=>{const askButton=document.getElementById('ask');askButton.disabled=true;statusEl.textContent='Asking AI… this can take several minutes on local models';document.getElementById('answer').textContent='Waiting for model response…';try{if(!context&&!fileScan)context=await api('/api/scan?'+deviceParam());const result=await api('/api/analyze',{prompt:document.getElementById('prompt').value,context:{system:context,fileScan},model:ollamaModelSel.value});document.getElementById('answer').textContent=result.response||JSON.stringify(result,null,2);statusEl.textContent='Analysis complete';}catch(e){statusEl.textContent='AI request failed';document.getElementById('answer').textContent=e.message;}finally{askButton.disabled=false;}};
 </script></main></body></html>`;
 }
 
@@ -517,6 +532,48 @@ async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+}
+
+async function ollamaJson(pathname, options = {}) {
+  let response;
+  try {
+    response = await fetch(`${OLLAMA_HOST}${pathname}`, {
+      ...options,
+      headers: { 'content-type': 'application/json', ...(options.headers || {}) },
+      signal: options.signal || getAbortSignal(OLLAMA_REQUEST_TIMEOUT_MS)
+    });
+  } catch (error) {
+    throw new Error(describeFetchError(error));
+  }
+  const text = await response.text();
+  let data = {};
+  if (text) {
+    try { data = JSON.parse(text); } catch (_) { data = { output: text }; }
+  }
+  if (!response.ok) throw new Error(`Ollama returned HTTP ${response.status}: ${text || response.statusText}`);
+  return data;
+}
+
+async function listOllamaModels() {
+  const tags = await ollamaJson('/api/tags');
+  let running = [];
+  try {
+    const ps = await ollamaJson('/api/ps');
+    running = Array.isArray(ps.models) ? ps.models : [];
+  } catch (_) {
+    running = [];
+  }
+  return { host: OLLAMA_HOST, defaultModel: OLLAMA_MODEL, models: Array.isArray(tags.models) ? tags.models : [], running };
+}
+
+async function pullOllamaModel(name) {
+  if (!name || !String(name).trim()) throw new Error('Model name is required');
+  return ollamaJson('/api/pull', { method: 'POST', body: JSON.stringify({ name: String(name).trim(), stream: false }) });
+}
+
+async function deleteOllamaModel(name) {
+  if (!name || !String(name).trim()) throw new Error('Model name is required');
+  return ollamaJson('/api/delete', { method: 'DELETE', body: JSON.stringify({ name: String(name).trim() }) });
 }
 
 async function findInstalledModel(requestedModel) {
@@ -667,8 +724,8 @@ async function generateWithModel(model, prompt, context) {
   return model === OLLAMA_MODEL ? data : { ...data, model };
 }
 
-async function analyze(prompt, context) {
-  return generateWithModel(OLLAMA_MODEL, prompt, context);
+async function analyze(prompt, context, model = OLLAMA_MODEL) {
+  return generateWithModel(model || OLLAMA_MODEL, prompt, context);
 }
 
 function resolveDevice(deviceId) {
@@ -715,9 +772,23 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, device ? (device.platform === 'windows' ? await collectWindowsFileScan(device, scanPath, depth) : await collectSshFileScan(device, scanPath, depth)) : await scanFiles(scanPath, depth));
       return;
     }
+    if (req.method === 'GET' && req.url === '/api/ollama/models') {
+      sendJson(res, 200, await listOllamaModels());
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/ollama/pull') {
+      const body = await readBody(req);
+      sendJson(res, 200, await pullOllamaModel(body.name));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/ollama/delete') {
+      const body = await readBody(req);
+      sendJson(res, 200, await deleteOllamaModel(body.name));
+      return;
+    }
     if (req.method === 'POST' && req.url === '/api/analyze') {
       const body = await readBody(req);
-      sendJson(res, 200, await analyze(body.prompt || 'Analyze this system.', body.context || await collectSystemContext()));
+      sendJson(res, 200, await analyze(body.prompt || 'Analyze this system.', body.context || await collectSystemContext(), body.model));
       return;
     }
     sendJson(res, 404, { error: 'Not found' });

@@ -40,7 +40,18 @@ SSH_BATCH_MODE=1
 WINDOWS_FILE_ROOT=C:\Users\tjing
 ```
 
-The system scan endpoint runs an allow-listed set of read-only commands with short timeouts. It does not make filesystem changes. AI analysis compacts scan results before sending them to Ollama, caps generated output for concise responses, and uses Ollama's streaming API internally so the app receives model output incrementally instead of waiting silently for a single long response. If a local model is still too slow, raise `OLLAMA_REQUEST_TIMEOUT_MS`, lower `MAX_MODEL_CONTEXT_CHARS`, or choose a smaller installed model.
+The Ollama Models card lists the models available from `OLLAMA_HOST` on desktop-glpggos, lets you choose the active model for **Send to AI**, pull a new model by name, and delete a selected local model. The system scan endpoint runs an allow-listed set of read-only commands with short timeouts. It does not make filesystem changes. AI analysis compacts scan results before sending them to Ollama, caps generated output for concise responses, and uses Ollama's streaming API internally so the app receives model output incrementally instead of waiting silently for a single long response. If a local model is still too slow, raise `OLLAMA_REQUEST_TIMEOUT_MS`, lower `MAX_MODEL_CONTEXT_CHARS`, or choose a smaller installed model.
+
+## Ollama model management
+
+Use the **Ollama Models** card to manage the Ollama server on desktop-glpggos (`OLLAMA_HOST`, default `http://100.98.112.1:11434`):
+
+- **Refresh Models** lists installed models and currently running models from Ollama.
+- **Active model** chooses which installed model is used when you click **Send to AI**.
+- **Pull Model** downloads a model by name, for example `llama3.1:8b` or `qwen3-coder:30b`.
+- **Delete Selected** removes the selected model from the desktop's local Ollama store after confirmation.
+
+The card uses Ollama's HTTP API through `OLLAMA_HOST`; SSH is not required for model management as long as the Ollama API is reachable from the NucBox.
 
 ## Remote device scanning
 
@@ -79,4 +90,4 @@ cd ~/Jetson_VR
 ./Start.sh
 ```
 
-In the browser, select **desktop-glpggos (Windows)**, click **Scan System**, and confirm the response includes the Windows hostname, `whoami`, OS info, disks, processes, network addresses, and listening ports. Then use **Browse** and **Scan Files** with a Windows path such as `C:\Users\tjing` to confirm file metadata is visible from the desktop.
+In the browser, select **desktop-glpggos (Windows)**, click **Scan System**, and confirm the response includes the Windows hostname, `whoami`, OS info, disks, processes, network addresses, and listening ports. Then click **Refresh Models** and confirm the Ollama list includes models such as `deepseek-r1:8b`, `llama3.1:8b`, and `qwen3-coder:30b`. Choose a model in **Active model** and click **Send to AI** to run analysis with that model. Then use **Browse** and **Scan Files** with a Windows path such as `C:\Users\tjing` to confirm file metadata is visible from the desktop.
