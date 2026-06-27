@@ -31,7 +31,8 @@ const DEVICES = [
     host: '100.98.112.1',
     platform: 'windows',
     sshUser: process.env.WINDOWS_SSH_USER || 'tjing',
-    sshKey: process.env.WINDOWS_SSH_KEY || '~/.ssh/id_ed25519_windows'
+    sshKey: process.env.WINDOWS_SSH_KEY || '~/.ssh/id_ed25519_windows',
+    fileRoot: process.env.WINDOWS_FILE_ROOT || 'C:\\Users\\tjing'
   },
   { id: 'pi5', name: 'pi5 (Raspberry Pi)', host: '100.64.69.114', platform: 'linux' },
   { id: 'tj-jetson-desktop', name: 'tj-jetson-desktop (Jetson)', host: '100.83.4.72', platform: 'linux' },
@@ -101,11 +102,11 @@ function sshPermissionHelp(output, settings) {
   ].join(' ');
 }
 
-function sshDeviceCommand(label, device, remoteCmd, timeout = 10000) {
+function sshDeviceCommand(label, device, remoteCmd, timeout = 10000, outputLimit = MAX_OUTPUT) {
   return new Promise((resolve) => {
     const settings = buildSshArgs(device, remoteCmd);
     execFile('ssh', settings.args, { timeout, maxBuffer: 1024 * 512 }, (error, stdout, stderr) => {
-      const output = String(stdout || stderr || error?.message || '').slice(0, MAX_OUTPUT);
+      const output = String(stdout || stderr || error?.message || '').slice(0, outputLimit);
       resolve({
         label,
         command: remoteCmd,
@@ -130,8 +131,12 @@ async function collectSshSystemContext(device) {
   return { collectedAt: new Date().toISOString(), remoteHost: device.host, platform: 'linux', checks };
 }
 
+function powershellString(value) {
+  return `'${String(value).replace(/'/g, `''`)}'`;
+}
+
 function powershellCommand(command) {
-  return `powershell -NoProfile -NonInteractive -Command ${shellQuote(command)}`;
+  return `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(command, 'utf16le').toString('base64')}`;
 }
 
 async function collectWindowsSystemContext(device) {
@@ -146,11 +151,84 @@ async function collectWindowsSystemContext(device) {
   return { collectedAt: new Date().toISOString(), remoteHost: device.host, platform: 'windows', checks };
 }
 
-function windowsFileUnsupported(device) {
+function windowsDefaultPath(device) {
+  return device.fileRoot || `C:\\Users\\${device.sshUser || SSH_USER}`;
+}
+
+function normalizeWindowsPath(device, remotePath) {
+  const value = String(remotePath || '').trim();
+  if (!value || /^\/(home|root)(\/|$)/i.test(value)) return windowsDefaultPath(device);
+  return value.replace(/\//g, '\\');
+}
+
+function parseJsonLines(output) {
+  return output.split('\n').filter(Boolean).flatMap((line) => {
+    try {
+      const parsed = JSON.parse(line);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch (_) {
+      return [];
+    }
+  });
+}
+
+async function browseWindowsDirectories(device, remotePath) {
+  const root = normalizeWindowsPath(device, remotePath);
+  const cmd = [
+    `$root = ${powershellString(root)}`,
+    '$parent = Split-Path -LiteralPath $root -Parent',
+    `Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction Stop | Sort-Object Name | Select-Object -First 200 @{Name='name';Expression={$_.Name}},@{Name='path';Expression={$_.FullName}} | ConvertTo-Json -Compress`,
+    `Write-Output (@{__parent=$parent} | ConvertTo-Json -Compress)`
+  ].join('; ');
+  const raw = await sshDeviceCommand('Windows directory browse', device, powershellCommand(cmd), 15000);
+  const items = raw.ok ? parseJsonLines(raw.output) : [];
+  const parentItem = items.find(item => item && Object.prototype.hasOwnProperty.call(item, '__parent'));
+  const directories = items.filter(item => item && item.name && item.path).map(item => ({ name: item.name, path: item.path }));
   return {
-    error: 'Windows file browsing/scanning is not implemented yet. System scan is supported.',
+    root,
     remoteHost: device.host,
-    platform: 'windows'
+    platform: 'windows',
+    parent: parentItem?.__parent || null,
+    directories,
+    errors: raw.ok ? [] : [{ message: raw.output, help: raw.help }]
+  };
+}
+
+async function collectWindowsFileScan(device, remotePath, depth) {
+  const root = normalizeWindowsPath(device, remotePath);
+  const safeDepth = clampDepth(depth);
+  const psMaxEntries = MAX_FILE_SCAN_VISITED;
+  const cmd = [
+    `$root = ${powershellString(root)}`,
+    `$maxDepth = ${safeDepth}`,
+    `$maxEntries = ${psMaxEntries}`,
+    '$rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop',
+    '$results = New-Object System.Collections.Generic.List[object]',
+    `function Add-Entry($item, [int]$depth) { if ($results.Count -ge $maxEntries) { return }; $rel = if ($item.FullName -eq $rootItem.FullName) { '.' } else { $item.FullName.Substring($rootItem.FullName.TrimEnd('\\').Length).TrimStart('\\') }; $type = if ($item.PSIsContainer) { 'directory' } else { 'file' }; $results.Add([pscustomobject]@{path=$rel; type=$type; depth=$depth; sizeBytes=if ($item.PSIsContainer) { 0 } else { $item.Length }; modifiedAt=$item.LastWriteTimeUtc.ToString('o'); mode=$item.Mode}) }`,
+    'function Walk($item, [int]$depth) { Add-Entry $item $depth; if (-not $item.PSIsContainer -or $depth -ge $maxDepth -or $results.Count -ge $maxEntries) { return }; Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object { Walk $_ ($depth + 1) } }',
+    'Walk $rootItem 0',
+    '$results | ConvertTo-Json -Compress'
+  ].join('; ');
+  const raw = await sshDeviceCommand('Windows file scan', device, powershellCommand(cmd), 30000, 1024 * 512);
+  const entries = raw.ok ? parseJsonLines(raw.output) : [];
+  let files = 0, directories = 0, totalFileBytes = 0;
+  for (const entry of entries) {
+    if (entry.type === 'file') { files++; totalFileBytes += Number(entry.sizeBytes) || 0; }
+    if (entry.type === 'directory') directories++;
+  }
+  const fileEntries = entries.filter(entry => entry.type === 'file');
+  return {
+    root,
+    remoteHost: device.host,
+    platform: 'windows',
+    maxDepth: safeDepth,
+    collectedAt: new Date().toISOString(),
+    limits: { maxDepth: MAX_FILE_SCAN_DEPTH, maxEntries: MAX_FILE_SCAN_ENTRIES, maxVisited: MAX_FILE_SCAN_VISITED },
+    summary: { files, directories, totalFileBytes, visited: entries.length, truncated: entries.length >= MAX_FILE_SCAN_VISITED },
+    entries: entries.slice(0, MAX_FILE_SCAN_ENTRIES),
+    largestFiles: [...fileEntries].sort((a, b) => (Number(b.sizeBytes) || 0) - (Number(a.sizeBytes) || 0)).slice(0, 20),
+    recentlyModified: [...fileEntries].sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt)).slice(0, 20),
+    errors: raw.ok ? [] : [{ message: raw.output, help: raw.help }]
   };
 }
 
@@ -405,7 +483,7 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background
   <h2>File Scan</h2>
   <div class="row"><label>Path <input id="filePath" type="text" value="${defaultFilePath}"></label><label>Depth <input id="fileDepth" type="number" min="0" max="${MAX_FILE_SCAN_DEPTH}" value="2"></label><button id="browseFiles">Browse</button><button id="fileUp">Up</button><button id="fileHome">Home</button><button id="fileScan">Scan Files</button></div>
   <div id="fileBrowser" class="browser muted">Click Browse to list child folders for the selected path.</div>
-  <p class="muted">Scans file names and metadata only. For Linux remote devices, uses SSH + <code>find</code>. Windows file browsing/scanning is not implemented yet. Depth 0 = selected path only; up to ${MAX_FILE_SCAN_DEPTH} levels.</p>
+  <p class="muted">Scans file names and metadata only. For Linux remote devices, uses SSH + <code>find</code>. For Windows, uses PowerShell over OpenSSH. Depth 0 = selected path only; up to ${MAX_FILE_SCAN_DEPTH} levels.</p>
 </div>
 <div class="card"><h2>Question</h2><textarea id="prompt">Review this compact Linux system summary. List the top 3 risks or issues and give safe next-step commands. Be concise.</textarea></div>
 <div class="card"><h2>Collected Context</h2><pre id="context">No scan yet.</pre></div>
@@ -421,7 +499,7 @@ const deviceInfo=document.getElementById('deviceInfo');
 DEVICES.forEach(d=>{const opt=document.createElement('option');opt.value=d.id;opt.textContent=d.name;deviceSel.appendChild(opt);});
 function getDevice(){return DEVICES.find(d=>d.id===deviceSel.value)||DEVICES[0];}
 function deviceParam(){const d=getDevice();return d.id==='local'?'':'&device='+encodeURIComponent(d.id);}
-deviceSel.onchange=()=>{const d=getDevice();deviceInfo.textContent=d.host?'SSH: '+d.host:'';if(d.platform==='android')statusEl.textContent='Android not supported for scanning';};
+deviceSel.onchange=()=>{const d=getDevice();deviceInfo.textContent=d.host?'SSH: '+d.host:'';if(d.fileRoot)document.getElementById('filePath').value=d.fileRoot;if(d.platform==='android')statusEl.textContent='Android not supported for scanning';};
 
 async function api(path,body){const res=await fetch(path,{method:body?'POST':'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});const text=await res.text();let data;try{data=text?JSON.parse(text):{};}catch(e){data={error:text||res.statusText};}if(!res.ok)throw new Error(data.error||text||res.statusText);return data;}
 async function browseFiles(pathOverride){const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH browsing not supported';return;}const input=document.getElementById('filePath');const root=encodeURIComponent(pathOverride||input.value);statusEl.textContent='Browsing folders'+(d.id!=='local'?' on '+d.name+' via SSH':'')+'…';try{const data=await api('/api/file-browse?path='+root+deviceParam());input.value=data.root;renderBrowser(data);statusEl.textContent='Folder browse complete';}catch(e){statusEl.textContent='Folder browse failed';document.getElementById('fileBrowser').textContent=e.message;}}
@@ -625,7 +703,7 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname !== '/api/file-browse') { sendJson(res, 404, { error: 'Not found' }); return; }
       const device = resolveDevice(url.searchParams.get('device'));
       const browsePath = url.searchParams.get('path') || os.homedir();
-      sendJson(res, 200, device ? (device.platform === 'windows' ? windowsFileUnsupported(device) : await browseSshDirectories(device, browsePath)) : await browseLocalDirectories(browsePath));
+      sendJson(res, 200, device ? (device.platform === 'windows' ? await browseWindowsDirectories(device, browsePath) : await browseSshDirectories(device, browsePath)) : await browseLocalDirectories(browsePath));
       return;
     }
     if (req.method === 'GET' && req.url.startsWith('/api/file-scan')) {
@@ -634,7 +712,7 @@ const server = http.createServer(async (req, res) => {
       const device = resolveDevice(url.searchParams.get('device'));
       const scanPath = url.searchParams.get('path') || os.homedir();
       const depth = url.searchParams.get('depth') || 2;
-      sendJson(res, 200, device ? (device.platform === 'windows' ? windowsFileUnsupported(device) : await collectSshFileScan(device, scanPath, depth)) : await scanFiles(scanPath, depth));
+      sendJson(res, 200, device ? (device.platform === 'windows' ? await collectWindowsFileScan(device, scanPath, depth) : await collectSshFileScan(device, scanPath, depth)) : await scanFiles(scanPath, depth));
       return;
     }
     if (req.method === 'POST' && req.url === '/api/analyze') {

@@ -27,6 +27,7 @@ ollama pull qwen2.5-coder:0.5b
 - `SSH_BATCH_MODE` - keep SSH non-interactive by default (`1`). Set to `0` only when you run the app in a terminal and want SSH to prompt for a password.
 - `WINDOWS_SSH_USER` - SSH username for the Windows desktop, default `tjing`
 - `WINDOWS_SSH_KEY` - SSH identity key for the Windows desktop, default `$HOME/.ssh/id_ed25519_windows`
+- `WINDOWS_FILE_ROOT` - default Windows file browser root, default `C:\Users\tjing`
 
 Example SSH environment:
 
@@ -36,13 +37,14 @@ WINDOWS_SSH_KEY=$HOME/.ssh/id_ed25519_windows
 SSH_USER=tj
 SSH_KEY=
 SSH_BATCH_MODE=1
+WINDOWS_FILE_ROOT=C:\Users\tjing
 ```
 
 The system scan endpoint runs an allow-listed set of read-only commands with short timeouts. It does not make filesystem changes. AI analysis compacts scan results before sending them to Ollama, caps generated output for concise responses, and uses Ollama's streaming API internally so the app receives model output incrementally instead of waiting silently for a single long response. If a local model is still too slow, raise `OLLAMA_REQUEST_TIMEOUT_MS`, lower `MAX_MODEL_CONTEXT_CHARS`, or choose a smaller installed model.
 
 ## Remote device scanning
 
-A device selector at the top of the UI lets you pick from your Tailscale devices. Selecting a remote device runs system scans via SSH using `BatchMode` (no password prompts). Linux devices continue to use the Linux SSH user (`SSH_USER`, default `tj`) and read-only commands such as `df`, `lsblk`, `ip`, `ss`, and `journalctl`. The Windows desktop uses its own username/key and read-only PowerShell commands over OpenSSH. The current manual Windows SSH command is:
+A device selector at the top of the UI lets you pick from your Tailscale devices. Selecting a remote device runs system scans and file scans via SSH using `BatchMode` (no password prompts). Linux devices continue to use the Linux SSH user (`SSH_USER`, default `tj`) and read-only commands such as `df`, `lsblk`, `ip`, `ss`, and `journalctl`. The Windows desktop uses its own username/key and read-only PowerShell commands over OpenSSH for system scans and file browsing/scanning. The current manual Windows SSH command is:
 
 ```bash
 ssh -i ~/.ssh/id_ed25519_windows tjing@100.98.112.1
@@ -59,7 +61,7 @@ Use the **File Scan** card to collect read-only file and directory metadata for 
 - `1` includes direct children.
 - Higher values include deeper child directories, up to the built-in depth safety limit of `8`.
 
-The file scan records names, types, sizes, modification times, modes, largest files, recently modified files, and access errors. It does not read file contents or follow symlinks, and it caps traversal at 5,000 visited entries to avoid runaway scans.
+The file scan records names, types, sizes, modification times, modes, largest files, recently modified files, and access errors. It does not read file contents or follow symlinks, and it caps traversal at 5,000 visited entries to avoid runaway scans. Linux remote file scans use `find`; Windows remote file scans use read-only PowerShell `Get-ChildItem` metadata collection over OpenSSH.
 
 
 ## Quick manual tests
@@ -77,4 +79,4 @@ cd ~/Jetson_VR
 ./Start.sh
 ```
 
-In the browser, select **desktop-glpggos (Windows)**, click **Scan System**, and confirm the response includes the Windows hostname, `whoami`, OS info, disks, processes, network addresses, and listening ports. Windows file browsing and file scanning are not implemented yet; those endpoints return a clear JSON error while Windows system scanning remains supported.
+In the browser, select **desktop-glpggos (Windows)**, click **Scan System**, and confirm the response includes the Windows hostname, `whoami`, OS info, disks, processes, network addresses, and listening ports. Then use **Browse** and **Scan Files** with a Windows path such as `C:\Users\tjing` to confirm file metadata is visible from the desktop.
