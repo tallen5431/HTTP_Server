@@ -9,7 +9,8 @@ const os = require('os');
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 8091);
 const LLM_PROVIDER = process.env.LLM_PROVIDER || 'ollama';
-const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_HOST || 'http://localhost:11434').replace(/\/+$/, '');
+const DESKTOP_OLLAMA_BASE_URL = (process.env.DESKTOP_OLLAMA_BASE_URL || 'http://100.98.112.1:11434').replace(/\/+$/, '');
+const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_HOST || DESKTOP_OLLAMA_BASE_URL).replace(/\/+$/, '');
 const OLLAMA_HOST = OLLAMA_BASE_URL;
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder:30b';
 const OLLAMA_REQUEST_TIMEOUT_MS = Number(process.env.OLLAMA_REQUEST_TIMEOUT_MS || 10 * 60 * 1000);
@@ -37,7 +38,8 @@ const DEVICES = [
     platform: 'windows',
     sshUser: process.env.WINDOWS_SSH_USER || 'tjing',
     sshKey: process.env.WINDOWS_SSH_KEY || '~/.ssh/id_ed25519_windows',
-    fileRoot: process.env.WINDOWS_FILE_ROOT || 'C:\\Users\\tjing'
+    fileRoot: process.env.WINDOWS_FILE_ROOT || 'C:\\Users\\tjing',
+    ollamaBaseUrl: DESKTOP_OLLAMA_BASE_URL
   },
   { id: 'pi5', name: 'pi5 (Raspberry Pi)', host: '100.64.69.114', platform: 'linux' },
   { id: 'tj-jetson-desktop', name: 'tj-jetson-desktop (Jetson)', host: '100.83.4.72', platform: 'linux' },
@@ -459,6 +461,7 @@ function html() {
   const defaultFilePath = escapeHtml(os.homedir());
   const ollamaModel = escapeHtml(OLLAMA_MODEL);
   const ollamaHost = escapeHtml(OLLAMA_BASE_URL);
+  const desktopOllamaHost = escapeHtml(DESKTOP_OLLAMA_BASE_URL);
   const llmTemperature = escapeHtml(LLM_TEMPERATURE);
   const llmContextSize = escapeHtml(LLM_CONTEXT_SIZE);
   const systemPrompt = escapeHtml(DEFAULT_SYSTEM_PROMPT);
@@ -476,26 +479,26 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background
 <h1>Qwen System Assistant</h1>
 <p class="muted">Collect read-only system context and ask <code>${ollamaModel}</code> through Ollama at <code>${ollamaHost}</code>. Prompts are compacted for smaller local models.</p>
 <div class="card">
-  <h2 style="margin-top:0">Device</h2>
+  <h2 style="margin-top:0">Work Target Device</h2>
   <div class="row">
     <select id="device"></select>
     <span id="deviceInfo" class="muted"></span>
   </div>
-  <p class="muted" style="margin-bottom:0">Select a Tailscale device to scan via SSH, or scan the local machine directly.</p>
+  <p class="muted" style="margin-bottom:0">Select the device to analyze or work on. The desktop-glpggos Windows machine is also the default AI worker that runs Ollama models.</p>
 </div>
 <div class="card">
   <div class="row"><button id="scan">Scan System</button><button id="ask">Send to AI</button><span id="status" class="muted">Idle</span></div>
   <p class="muted">Gathers disk, process, network, journal, and system info. Remote devices are scanned via SSH.</p>
 </div>
 <div class="card">
-  <h2>Local LLM Settings</h2>
-  <div class="row"><label>Endpoint <input id="ollamaEndpoint" type="text" value="${ollamaHost}"></label><button id="testOllama">Test Connection</button><button id="ensureDesktopOllama">Start Desktop Ollama via SSH</button></div>
+  <h2>AI Worker: desktop-glpggos Ollama</h2>
+  <div class="row"><label>Endpoint <input id="ollamaEndpoint" type="text" value="${ollamaHost}"></label><button id="useDesktopOllama">Use Desktop Endpoint</button><button id="testOllama">Test Connection</button><button id="ensureDesktopOllama">Start Desktop Ollama via SSH</button></div>
   <div class="row"><label>Preset <select id="modelPreset"><option value="">Custom</option><option value="fast">Fast/small model</option><option value="coding">Coding model</option><option value="reasoning">Large reasoning model</option><option value="visionOff">Vision disabled fallback</option></select></label><label>Active model <select id="ollamaModel"><option value="${ollamaModel}">${ollamaModel}</option></select></label><button id="refreshModels">Refresh Models</button><button id="deleteModel">Delete Selected</button></div>
   <div class="row"><label>Context <input id="llmContextSize" type="number" min="1024" step="1024" value="${llmContextSize}"></label><label>Temperature <input id="llmTemperature" type="number" min="0" max="2" step="0.1" value="${llmTemperature}"></label></div>
   <label>System prompt<textarea id="systemPrompt">${systemPrompt}</textarea></label>
   <div class="row"><label>Pull model <input id="pullModelName" type="text" placeholder="llama3.1:8b"></label><button id="pullModel">Pull Model</button></div>
   <pre id="modelList">Click Refresh Models to list Ollama models on ${ollamaHost}.</pre>
-  <p class="muted">Supports Ollama-compatible endpoints such as localhost or a LAN/Tailscale URL. Use SSH start for desktop-glpggos if Ollama is not already serving.</p>
+  <p class="muted">Models are expected to run on desktop-glpggos at ${desktopOllamaHost}. You can override the endpoint for another Ollama-compatible worker if needed.</p>
 </div>
 <div class="card">
   <h2>File Scan</h2>
@@ -513,6 +516,7 @@ let fileScan=null;
 const statusEl=document.getElementById('status');
 const deviceSel=document.getElementById('device');
 const deviceInfo=document.getElementById('deviceInfo');
+const DESKTOP_OLLAMA_BASE_URL='${desktopOllamaHost}';
 
 DEVICES.forEach(d=>{const opt=document.createElement('option');opt.value=d.id;opt.textContent=d.name;deviceSel.appendChild(opt);});
 function getDevice(){return DEVICES.find(d=>d.id===deviceSel.value)||DEVICES[0];}
@@ -527,6 +531,7 @@ function formatBytes(bytes){const n=Number(bytes)||0;if(!n)return '';const units
 function selectModel(name){if(!name)return;if(![...ollamaModelSel.options].some(opt=>opt.value===name)){const opt=document.createElement('option');opt.value=name;opt.textContent=name;ollamaModelSel.appendChild(opt);}ollamaModelSel.value=name;}
 async function refreshModels(){statusEl.textContent='Refreshing Ollama models…';try{const data=await api('/api/ollama/models?baseUrl='+encodeURIComponent(llmSettings().baseUrl));renderModels(data);statusEl.textContent='Model list refreshed';}catch(e){statusEl.textContent='Model refresh failed';document.getElementById('modelList').textContent=e.message;}}
 document.getElementById('refreshModels').onclick=refreshModels;
+document.getElementById('useDesktopOllama').onclick=()=>{document.getElementById('ollamaEndpoint').value=DESKTOP_OLLAMA_BASE_URL;refreshModels();};
 document.getElementById('testOllama').onclick=async()=>{statusEl.textContent='Testing Ollama connection…';try{const data=await api('/api/ollama/test',{...llmSettings()});document.getElementById('modelList').textContent=JSON.stringify(data,null,2);statusEl.textContent=data.warning||'Ollama connection OK';}catch(e){statusEl.textContent='Ollama test failed';document.getElementById('modelList').textContent=e.message;}};
 document.getElementById('ensureDesktopOllama').onclick=async()=>{statusEl.textContent='Starting desktop Ollama over SSH…';try{const data=await api('/api/ollama/ensure-desktop',{});document.getElementById('modelList').textContent=JSON.stringify(data,null,2);await refreshModels();statusEl.textContent='Desktop Ollama start/check complete';}catch(e){statusEl.textContent='Desktop Ollama SSH start failed';document.getElementById('modelList').textContent=e.message;}};
 document.getElementById('modelPreset').onchange=()=>{const p=document.getElementById('modelPreset').value;if(p==='fast')selectModel('deepseek-r1:1.5b');if(p==='coding')selectModel('qwen3-coder:30b');if(p==='reasoning')selectModel('deepseek-r1:8b');if(p==='visionOff')selectModel('qwen2.5-coder:14b');};

@@ -16,7 +16,8 @@ ollama pull qwen3-coder:30b
 - `HOST` - bind address, default `0.0.0.0`
 - `PORT` - web UI port, default `8091`
 - `LLM_PROVIDER` - LLM provider, currently `ollama`
-- `OLLAMA_BASE_URL` - Ollama-compatible API URL, default `http://localhost:11434`; use LAN/Tailscale URLs such as `http://100.98.112.1:11434` or `http://192.168.x.x:11434` for remote desktops
+- `DESKTOP_OLLAMA_BASE_URL` - Ollama URL for the desktop-glpggos AI worker, default `http://100.98.112.1:11434`
+- `OLLAMA_BASE_URL` - Ollama-compatible API URL, defaulting to `DESKTOP_OLLAMA_BASE_URL`; override with `http://localhost:11434` or a LAN URL such as `http://192.168.x.x:11434` for another worker
 - `OLLAMA_HOST` - backwards-compatible alias for `OLLAMA_BASE_URL`
 - `OLLAMA_MODEL` - default model name, default `qwen3-coder:30b`
 - `OLLAMA_REQUEST_TIMEOUT_MS` - maximum time to wait for one Ollama request, default `600000` (10 minutes)
@@ -38,7 +39,8 @@ Example LLM and SSH environment:
 
 ```bash
 LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434
+DESKTOP_OLLAMA_BASE_URL=http://100.98.112.1:11434
+OLLAMA_BASE_URL=$DESKTOP_OLLAMA_BASE_URL
 OLLAMA_MODEL=qwen3-coder:30b
 LLM_TEMPERATURE=0.2
 LLM_CONTEXT_SIZE=8192
@@ -50,13 +52,13 @@ SSH_BATCH_MODE=1
 WINDOWS_FILE_ROOT=C:\Users\tjing
 ```
 
-The Local LLM Settings card lists models available from the configured Ollama-compatible endpoint, lets you choose the endpoint URL, active model, context size, temperature, and system prompt for **Send to AI**, pull a new model by name, delete a selected local model, test the connection, and start desktop-glpggos Ollama over SSH. The system scan endpoint runs an allow-listed set of read-only commands with short timeouts. It does not make filesystem changes. AI analysis compacts scan results before sending them to Ollama, caps generated output for concise responses, and uses Ollama's streaming API internally so the app receives model output incrementally instead of waiting silently for a single long response. If a local model is still too slow, raise `OLLAMA_REQUEST_TIMEOUT_MS`, lower `MAX_MODEL_CONTEXT_CHARS`, or choose a smaller installed model.
+The app is organized around a **Work Target Device** (the device to scan/analyze/work on) and an **AI Worker** (desktop-glpggos Ollama by default). The Local LLM Settings card lists models available from desktop-glpggos, lets you choose the endpoint URL, active model, context size, temperature, and system prompt for **Send to AI**, pull a new model by name, delete a selected local model, test the connection, and start desktop-glpggos Ollama over SSH. The system scan endpoint runs an allow-listed set of read-only commands with short timeouts. It does not make filesystem changes. AI analysis compacts scan results before sending them to Ollama, caps generated output for concise responses, and uses Ollama's streaming API internally so the app receives model output incrementally instead of waiting silently for a single long response. If a local model is still too slow, raise `OLLAMA_REQUEST_TIMEOUT_MS`, lower `MAX_MODEL_CONTEXT_CHARS`, or choose a smaller installed model.
 
 ## Local LLM and Ollama model management
 
-Use the **Local LLM Settings** card to manage an Ollama-compatible endpoint. The default is local Ollama at `http://localhost:11434`, and remote LAN/Tailscale endpoints such as `http://100.98.112.1:11434` are supported.
+Use the **Local LLM Settings** card to manage the **desktop-glpggos AI worker**. The default endpoint is `http://100.98.112.1:11434`; localhost and other LAN/Tailscale Ollama-compatible endpoints remain supported for overrides.
 
-- **Endpoint** controls the Ollama-compatible base URL used by model listing, pull/delete, test connection, and chat.
+- **Endpoint** controls the Ollama-compatible base URL used by model listing, pull/delete, test connection, and chat; **Use Desktop Endpoint** restores desktop-glpggos.
 - **Start Desktop Ollama via SSH** uses the existing `desktop-glpggos` SSH settings to run `ollama serve` on the Windows desktop if no Ollama process is running.
 - **Test Connection** calls `GET /api/tags` and reports whether the selected model is installed.
 - **Refresh Models** lists installed models from `GET /api/tags` and currently running models when Ollama supports `/api/ps`.
@@ -76,12 +78,13 @@ ollama pull qwen3-coder:30b
 ollama serve
 ```
 
-For desktop-glpggos, you can either run `ollama serve` manually in PowerShell or click **Start Desktop Ollama via SSH** in the app. Configure the app endpoint with `OLLAMA_BASE_URL`, for example:
+For desktop-glpggos, you can either run `ollama serve` manually in PowerShell or click **Start Desktop Ollama via SSH** in the app. Configure the desktop worker endpoint with `DESKTOP_OLLAMA_BASE_URL` / `OLLAMA_BASE_URL`, for example:
 
 ```bash
+DESKTOP_OLLAMA_BASE_URL=http://100.98.112.1:11434
+OLLAMA_BASE_URL=$DESKTOP_OLLAMA_BASE_URL
+# or override for a same-machine Ollama worker
 OLLAMA_BASE_URL=http://localhost:11434
-# or from the NucBox to the Windows desktop over Tailscale/LAN
-OLLAMA_BASE_URL=http://100.98.112.1:11434
 ```
 
 Recommended starting points:
