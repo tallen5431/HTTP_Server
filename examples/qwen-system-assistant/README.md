@@ -1,6 +1,6 @@
 # Qwen System Assistant
 
-A bundled HTTP Server Manager program that connects to a local Ollama model such as `qwen2.5-coder:0.5b` and gathers read-only system context for analysis. Linux devices use normal Linux shell commands over SSH, while Windows system scanning uses PowerShell over OpenSSH.
+A bundled HTTP Server Manager program that connects to an Ollama-compatible local LLM endpoint such as `qwen3-coder:30b` and gathers read-only system context for analysis. Linux devices use normal Linux shell commands over SSH, while Windows system scanning uses PowerShell over OpenSSH.
 
 ## Requirements
 
@@ -8,17 +8,22 @@ A bundled HTTP Server Manager program that connects to a local Ollama model such
 - A pulled model, for example:
 
 ```bash
-ollama pull qwen2.5-coder:0.5b
+ollama pull qwen3-coder:30b
 ```
 
 ## Environment
 
 - `HOST` - bind address, default `0.0.0.0`
 - `PORT` - web UI port, default `8091`
-- `OLLAMA_HOST` - Ollama API URL, default `http://100.98.112.1:11434` (desktop-glpggos via Tailscale)
-- `OLLAMA_MODEL` - model name, default `qwen2.5-coder:0.5b`
-- `OLLAMA_REQUEST_TIMEOUT_MS` - maximum time to wait for one Ollama generation, default `600000` (10 minutes)
-- `OLLAMA_NUM_CTX` - Ollama context window used for analysis, default `8192`
+- `LLM_PROVIDER` - LLM provider, currently `ollama`
+- `OLLAMA_BASE_URL` - Ollama-compatible API URL, default `http://localhost:11434`; use LAN/Tailscale URLs such as `http://100.98.112.1:11434` or `http://192.168.x.x:11434` for remote desktops
+- `OLLAMA_HOST` - backwards-compatible alias for `OLLAMA_BASE_URL`
+- `OLLAMA_MODEL` - default model name, default `qwen3-coder:30b`
+- `OLLAMA_REQUEST_TIMEOUT_MS` - maximum time to wait for one Ollama request, default `600000` (10 minutes)
+- `LLM_CONTEXT_SIZE` - chat context size sent as Ollama `num_ctx`, default `8192`
+- `LLM_TEMPERATURE` - generation temperature, default `0.2`
+- `LLM_SYSTEM_PROMPT` - optional reusable system prompt override
+- `OLLAMA_NUM_CTX` - backwards-compatible alias for `LLM_CONTEXT_SIZE`
 - `OLLAMA_NUM_PREDICT` - maximum generated tokens for concise analysis, default `512`
 - `MAX_MODEL_CONTEXT_CHARS` - maximum compacted JSON context sent to the model, default `24000`
 
@@ -29,9 +34,14 @@ ollama pull qwen2.5-coder:0.5b
 - `WINDOWS_SSH_KEY` - SSH identity key for the Windows desktop, default `$HOME/.ssh/id_ed25519_windows`
 - `WINDOWS_FILE_ROOT` - default Windows file browser root, default `C:\Users\tjing`
 
-Example SSH environment:
+Example LLM and SSH environment:
 
 ```bash
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3-coder:30b
+LLM_TEMPERATURE=0.2
+LLM_CONTEXT_SIZE=8192
 WINDOWS_SSH_USER=tjing
 WINDOWS_SSH_KEY=$HOME/.ssh/id_ed25519_windows
 SSH_USER=tj
@@ -40,18 +50,45 @@ SSH_BATCH_MODE=1
 WINDOWS_FILE_ROOT=C:\Users\tjing
 ```
 
-The Ollama Models card lists the models available from `OLLAMA_HOST` on desktop-glpggos, lets you choose the active model for **Send to AI**, pull a new model by name, and delete a selected local model. The system scan endpoint runs an allow-listed set of read-only commands with short timeouts. It does not make filesystem changes. AI analysis compacts scan results before sending them to Ollama, caps generated output for concise responses, and uses Ollama's streaming API internally so the app receives model output incrementally instead of waiting silently for a single long response. If a local model is still too slow, raise `OLLAMA_REQUEST_TIMEOUT_MS`, lower `MAX_MODEL_CONTEXT_CHARS`, or choose a smaller installed model.
+The Local LLM Settings card lists models available from the configured Ollama-compatible endpoint, lets you choose the endpoint URL, active model, context size, temperature, and system prompt for **Send to AI**, pull a new model by name, delete a selected local model, test the connection, and start desktop-glpggos Ollama over SSH. The system scan endpoint runs an allow-listed set of read-only commands with short timeouts. It does not make filesystem changes. AI analysis compacts scan results before sending them to Ollama, caps generated output for concise responses, and uses Ollama's streaming API internally so the app receives model output incrementally instead of waiting silently for a single long response. If a local model is still too slow, raise `OLLAMA_REQUEST_TIMEOUT_MS`, lower `MAX_MODEL_CONTEXT_CHARS`, or choose a smaller installed model.
 
-## Ollama model management
+## Local LLM and Ollama model management
 
-Use the **Ollama Models** card to manage the Ollama server on desktop-glpggos (`OLLAMA_HOST`, default `http://100.98.112.1:11434`):
+Use the **Local LLM Settings** card to manage an Ollama-compatible endpoint. The default is local Ollama at `http://localhost:11434`, and remote LAN/Tailscale endpoints such as `http://100.98.112.1:11434` are supported.
 
-- **Refresh Models** lists installed models and currently running models from Ollama.
-- **Active model** chooses which installed model is used when you click **Send to AI**.
+- **Endpoint** controls the Ollama-compatible base URL used by model listing, pull/delete, test connection, and chat.
+- **Start Desktop Ollama via SSH** uses the existing `desktop-glpggos` SSH settings to run `ollama serve` on the Windows desktop if no Ollama process is running.
+- **Test Connection** calls `GET /api/tags` and reports whether the selected model is installed.
+- **Refresh Models** lists installed models from `GET /api/tags` and currently running models when Ollama supports `/api/ps`.
+- **Preset** quickly selects common use cases: fast/small, coding, large reasoning, or a non-vision fallback.
+- **Active model**, **Context**, **Temperature**, and **System prompt** are sent to `POST /api/chat` for analysis.
 - **Pull Model** downloads a model by name, for example `llama3.1:8b` or `qwen3-coder:30b`.
-- **Delete Selected** removes the selected model from the desktop's local Ollama store after confirmation.
+- **Delete Selected** removes the selected model from the endpoint's local Ollama store after confirmation.
 
-The card uses Ollama's HTTP API through `OLLAMA_HOST`; SSH is not required for model management as long as the Ollama API is reachable from the NucBox.
+The app sends structured chat messages with a coding-focused system prompt and compact JSON context instead of dumping the whole repo blindly. If the selected model is not available and the configured default differs, the app falls back to the default model once and reports which model failed.
+
+## Running Ollama
+
+Install Ollama from <https://ollama.com/download>, then pull and serve a model:
+
+```bash
+ollama pull qwen3-coder:30b
+ollama serve
+```
+
+For desktop-glpggos, you can either run `ollama serve` manually in PowerShell or click **Start Desktop Ollama via SSH** in the app. Configure the app endpoint with `OLLAMA_BASE_URL`, for example:
+
+```bash
+OLLAMA_BASE_URL=http://localhost:11434
+# or from the NucBox to the Windows desktop over Tailscale/LAN
+OLLAMA_BASE_URL=http://100.98.112.1:11434
+```
+
+Recommended starting points:
+
+- **3090 Ti / high VRAM desktop:** `qwen3-coder:30b`, `qwen2.5-coder:14b`, or similar larger coding models.
+- **Jetson:** small models only, such as 1.5B-3B class models.
+- **CPU fallback:** small/fast models; reduce `LLM_CONTEXT_SIZE` and keep `LLM_TEMPERATURE=0.2`.
 
 ## Remote device scanning
 
@@ -90,4 +127,4 @@ cd ~/Jetson_VR
 ./Start.sh
 ```
 
-In the browser, select **desktop-glpggos (Windows)**, click **Scan System**, and confirm the response includes the Windows hostname, `whoami`, OS info, disks, processes, network addresses, and listening ports. Then click **Refresh Models** and confirm the Ollama list includes models such as `deepseek-r1:8b`, `llama3.1:8b`, and `qwen3-coder:30b`. Choose a model in **Active model** and click **Send to AI** to run analysis with that model. Then use **Browse** and **Scan Files** with a Windows path such as `C:\Users\tjing` to confirm file metadata is visible from the desktop.
+In the browser, select **desktop-glpggos (Windows)**, click **Scan System**, and confirm the response includes the Windows hostname, `whoami`, OS info, disks, processes, network addresses, and listening ports. Then set the endpoint, click **Start Desktop Ollama via SSH** if needed, click **Test Connection**, click **Refresh Models**, and confirm the Ollama list includes models such as `deepseek-r1:8b`, `llama3.1:8b`, and `qwen3-coder:30b`. Choose a model in **Active model** and click **Send to AI** to run analysis with that model. Then use **Browse** and **Scan Files** with a Windows path such as `C:\Users\tjing` to confirm file metadata is visible from the desktop.

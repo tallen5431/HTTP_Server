@@ -8,11 +8,16 @@ const os = require('os');
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 8091);
-const OLLAMA_HOST = (process.env.OLLAMA_HOST || 'http://100.98.112.1:11434').replace(/\/+$/, '');
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder:0.5b';
+const LLM_PROVIDER = process.env.LLM_PROVIDER || 'ollama';
+const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_HOST || 'http://localhost:11434').replace(/\/+$/, '');
+const OLLAMA_HOST = OLLAMA_BASE_URL;
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder:30b';
 const OLLAMA_REQUEST_TIMEOUT_MS = Number(process.env.OLLAMA_REQUEST_TIMEOUT_MS || 10 * 60 * 1000);
-const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX || 8192);
+const LLM_CONTEXT_SIZE = Number(process.env.LLM_CONTEXT_SIZE || process.env.OLLAMA_NUM_CTX || 8192);
+const LLM_TEMPERATURE = Number(process.env.LLM_TEMPERATURE || 0.2);
+const OLLAMA_NUM_CTX = LLM_CONTEXT_SIZE;
 const OLLAMA_NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT || 512);
+const DEFAULT_SYSTEM_PROMPT = process.env.LLM_SYSTEM_PROMPT || 'You are a concise local coding assistant. Use the provided JSON context only. Identify concrete issues, propose exact commands or patches, avoid speculation, and keep answers actionable.';
 const MAX_OUTPUT = 4000;
 const MAX_MODEL_CONTEXT_CHARS = Number(process.env.MAX_MODEL_CONTEXT_CHARS || 24000);
 const MAX_FILE_SCAN_DEPTH = 8;
@@ -453,7 +458,10 @@ function escapeHtml(value) {
 function html() {
   const defaultFilePath = escapeHtml(os.homedir());
   const ollamaModel = escapeHtml(OLLAMA_MODEL);
-  const ollamaHost = escapeHtml(OLLAMA_HOST);
+  const ollamaHost = escapeHtml(OLLAMA_BASE_URL);
+  const llmTemperature = escapeHtml(LLM_TEMPERATURE);
+  const llmContextSize = escapeHtml(LLM_CONTEXT_SIZE);
+  const systemPrompt = escapeHtml(DEFAULT_SYSTEM_PROMPT);
   const devicesJson = JSON.stringify(DEVICES);
   return `<!doctype html>
 <html lang="en">
@@ -480,11 +488,14 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background
   <p class="muted">Gathers disk, process, network, journal, and system info. Remote devices are scanned via SSH.</p>
 </div>
 <div class="card">
-  <h2>Ollama Models</h2>
-  <div class="row"><label>Active model <select id="ollamaModel"><option value="${ollamaModel}">${ollamaModel}</option></select></label><button id="refreshModels">Refresh Models</button><button id="deleteModel">Delete Selected</button></div>
+  <h2>Local LLM Settings</h2>
+  <div class="row"><label>Endpoint <input id="ollamaEndpoint" type="text" value="${ollamaHost}"></label><button id="testOllama">Test Connection</button><button id="ensureDesktopOllama">Start Desktop Ollama via SSH</button></div>
+  <div class="row"><label>Preset <select id="modelPreset"><option value="">Custom</option><option value="fast">Fast/small model</option><option value="coding">Coding model</option><option value="reasoning">Large reasoning model</option><option value="visionOff">Vision disabled fallback</option></select></label><label>Active model <select id="ollamaModel"><option value="${ollamaModel}">${ollamaModel}</option></select></label><button id="refreshModels">Refresh Models</button><button id="deleteModel">Delete Selected</button></div>
+  <div class="row"><label>Context <input id="llmContextSize" type="number" min="1024" step="1024" value="${llmContextSize}"></label><label>Temperature <input id="llmTemperature" type="number" min="0" max="2" step="0.1" value="${llmTemperature}"></label></div>
+  <label>System prompt<textarea id="systemPrompt">${systemPrompt}</textarea></label>
   <div class="row"><label>Pull model <input id="pullModelName" type="text" placeholder="llama3.1:8b"></label><button id="pullModel">Pull Model</button></div>
   <pre id="modelList">Click Refresh Models to list Ollama models on ${ollamaHost}.</pre>
-  <p class="muted">Lists, selects, pulls, and deletes models from the Ollama server on desktop-glpggos. Delete only removes the selected local model.</p>
+  <p class="muted">Supports Ollama-compatible endpoints such as localhost or a LAN/Tailscale URL. Use SSH start for desktop-glpggos if Ollama is not already serving.</p>
 </div>
 <div class="card">
   <h2>File Scan</h2>
@@ -510,12 +521,17 @@ deviceSel.onchange=()=>{const d=getDevice();deviceInfo.textContent=d.host?'SSH: 
 
 async function api(path,body){const res=await fetch(path,{method:body?'POST':'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});const text=await res.text();let data;try{data=text?JSON.parse(text):{};}catch(e){data={error:text||res.statusText};}if(!res.ok)throw new Error(data.error||text||res.statusText);return data;}
 const ollamaModelSel=document.getElementById('ollamaModel');
+function llmSettings(){return{baseUrl:document.getElementById('ollamaEndpoint').value.trim(),model:ollamaModelSel.value,contextSize:Number(document.getElementById('llmContextSize').value)||8192,temperature:Number(document.getElementById('llmTemperature').value)||0,systemPrompt:document.getElementById('systemPrompt').value};}
 function renderModels(data){const models=data.models||[];const active=ollamaModelSel.value||data.defaultModel||'${ollamaModel}';ollamaModelSel.innerHTML='';if(!models.some(m=>m.name===active)){const opt=document.createElement('option');opt.value=active;opt.textContent=active;ollamaModelSel.appendChild(opt);}models.forEach(m=>{const opt=document.createElement('option');opt.value=m.name;opt.textContent=m.name+(m.size?' ('+formatBytes(m.size)+')':'');ollamaModelSel.appendChild(opt);});ollamaModelSel.value=active;document.getElementById('modelList').textContent=JSON.stringify(data,null,2);}
 function formatBytes(bytes){const n=Number(bytes)||0;if(!n)return '';const units=['B','KB','MB','GB','TB'];let value=n;let i=0;while(value>=1024&&i<units.length-1){value/=1024;i++;}return value.toFixed(value>=10||i===0?0:1)+' '+units[i];}
-async function refreshModels(){statusEl.textContent='Refreshing Ollama models…';try{const data=await api('/api/ollama/models');renderModels(data);statusEl.textContent='Model list refreshed';}catch(e){statusEl.textContent='Model refresh failed';document.getElementById('modelList').textContent=e.message;}}
+function selectModel(name){if(!name)return;if(![...ollamaModelSel.options].some(opt=>opt.value===name)){const opt=document.createElement('option');opt.value=name;opt.textContent=name;ollamaModelSel.appendChild(opt);}ollamaModelSel.value=name;}
+async function refreshModels(){statusEl.textContent='Refreshing Ollama models…';try{const data=await api('/api/ollama/models?baseUrl='+encodeURIComponent(llmSettings().baseUrl));renderModels(data);statusEl.textContent='Model list refreshed';}catch(e){statusEl.textContent='Model refresh failed';document.getElementById('modelList').textContent=e.message;}}
 document.getElementById('refreshModels').onclick=refreshModels;
-document.getElementById('pullModel').onclick=async()=>{const name=document.getElementById('pullModelName').value.trim();if(!name){statusEl.textContent='Enter a model name to pull';return;}statusEl.textContent='Pulling '+name+'…';try{const data=await api('/api/ollama/pull',{name});document.getElementById('modelList').textContent=JSON.stringify(data,null,2);await refreshModels();statusEl.textContent='Pulled '+name;}catch(e){statusEl.textContent='Pull failed';document.getElementById('modelList').textContent=e.message;}};
-document.getElementById('deleteModel').onclick=async()=>{const name=ollamaModelSel.value;if(!name){statusEl.textContent='Select a model to delete';return;}if(!confirm('Delete Ollama model '+name+' from desktop-glpggos?'))return;statusEl.textContent='Deleting '+name+'…';try{const data=await api('/api/ollama/delete',{name});document.getElementById('modelList').textContent=JSON.stringify(data,null,2);await refreshModels();statusEl.textContent='Deleted '+name;}catch(e){statusEl.textContent='Delete failed';document.getElementById('modelList').textContent=e.message;}};
+document.getElementById('testOllama').onclick=async()=>{statusEl.textContent='Testing Ollama connection…';try{const data=await api('/api/ollama/test',{...llmSettings()});document.getElementById('modelList').textContent=JSON.stringify(data,null,2);statusEl.textContent=data.warning||'Ollama connection OK';}catch(e){statusEl.textContent='Ollama test failed';document.getElementById('modelList').textContent=e.message;}};
+document.getElementById('ensureDesktopOllama').onclick=async()=>{statusEl.textContent='Starting desktop Ollama over SSH…';try{const data=await api('/api/ollama/ensure-desktop',{});document.getElementById('modelList').textContent=JSON.stringify(data,null,2);await refreshModels();statusEl.textContent='Desktop Ollama start/check complete';}catch(e){statusEl.textContent='Desktop Ollama SSH start failed';document.getElementById('modelList').textContent=e.message;}};
+document.getElementById('modelPreset').onchange=()=>{const p=document.getElementById('modelPreset').value;if(p==='fast')selectModel('deepseek-r1:1.5b');if(p==='coding')selectModel('qwen3-coder:30b');if(p==='reasoning')selectModel('deepseek-r1:8b');if(p==='visionOff')selectModel('qwen2.5-coder:14b');};
+document.getElementById('pullModel').onclick=async()=>{const name=document.getElementById('pullModelName').value.trim();if(!name){statusEl.textContent='Enter a model name to pull';return;}statusEl.textContent='Pulling '+name+'…';try{const data=await api('/api/ollama/pull',{name,baseUrl:llmSettings().baseUrl});document.getElementById('modelList').textContent=JSON.stringify(data,null,2);await refreshModels();statusEl.textContent='Pulled '+name;}catch(e){statusEl.textContent='Pull failed';document.getElementById('modelList').textContent=e.message;}};
+document.getElementById('deleteModel').onclick=async()=>{const name=ollamaModelSel.value;if(!name){statusEl.textContent='Select a model to delete';return;}if(!confirm('Delete Ollama model '+name+' from the selected endpoint?'))return;statusEl.textContent='Deleting '+name+'…';try{const data=await api('/api/ollama/delete',{name,baseUrl:llmSettings().baseUrl});document.getElementById('modelList').textContent=JSON.stringify(data,null,2);await refreshModels();statusEl.textContent='Deleted '+name;}catch(e){statusEl.textContent='Delete failed';document.getElementById('modelList').textContent=e.message;}};
 refreshModels();
 async function browseFiles(pathOverride){const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH browsing not supported';return;}const input=document.getElementById('filePath');const root=encodeURIComponent(pathOverride||input.value);statusEl.textContent='Browsing folders'+(d.id!=='local'?' on '+d.name+' via SSH':'')+'…';try{const data=await api('/api/file-browse?path='+root+deviceParam());input.value=data.root;renderBrowser(data);statusEl.textContent='Folder browse complete';}catch(e){statusEl.textContent='Folder browse failed';document.getElementById('fileBrowser').textContent=e.message;}}
 function renderBrowser(data){const box=document.getElementById('fileBrowser');box.innerHTML='';if(data.errors&&data.errors.length){const p=document.createElement('p');p.className='help';p.textContent=(data.errors[0].help||data.errors[0].message);box.appendChild(p);}const meta=document.createElement('p');meta.className='muted';meta.textContent=(data.directories||[]).length+' folders under '+data.root;box.appendChild(meta);(data.directories||[]).forEach(dir=>{const b=document.createElement('button');b.className='dir';b.textContent='📁 '+dir.name;b.onclick=()=>browseFiles(dir.path);box.appendChild(b);});box.dataset.parent=data.parent||'';}
@@ -524,7 +540,7 @@ document.getElementById('fileUp').onclick=()=>{const parent=document.getElementB
 document.getElementById('fileHome').onclick=()=>{document.getElementById('filePath').value='${defaultFilePath}';browseFiles('${defaultFilePath}');};
 document.getElementById('scan').onclick=async()=>{const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH scanning not supported';return;}statusEl.textContent='Scanning'+(d.id!=='local'?' '+d.name+' via SSH':'')+'…';try{context=await api('/api/scan?'+deviceParam());document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='Scan complete';}catch(e){statusEl.textContent='Scan failed';document.getElementById('context').textContent=e.message;}};
 document.getElementById('fileScan').onclick=async()=>{const d=getDevice();if(d.platform==='android'){statusEl.textContent='Android SSH scanning not supported';return;}const root=encodeURIComponent(document.getElementById('filePath').value);const depth=encodeURIComponent(document.getElementById('fileDepth').value);statusEl.textContent='Scanning files'+(d.id!=='local'?' on '+d.name+' via SSH':'')+'…';try{fileScan=await api('/api/file-scan?path='+root+'&depth='+depth+deviceParam());document.getElementById('context').textContent=JSON.stringify({system:context,fileScan},null,2);statusEl.textContent='File scan complete';}catch(e){statusEl.textContent='File scan failed';document.getElementById('context').textContent=e.message;}};
-document.getElementById('ask').onclick=async()=>{const askButton=document.getElementById('ask');askButton.disabled=true;statusEl.textContent='Asking AI… this can take several minutes on local models';document.getElementById('answer').textContent='Waiting for model response…';try{if(!context&&!fileScan)context=await api('/api/scan?'+deviceParam());const result=await api('/api/analyze',{prompt:document.getElementById('prompt').value,context:{system:context,fileScan},model:ollamaModelSel.value});document.getElementById('answer').textContent=result.response||JSON.stringify(result,null,2);statusEl.textContent='Analysis complete';}catch(e){statusEl.textContent='AI request failed';document.getElementById('answer').textContent=e.message;}finally{askButton.disabled=false;}};
+document.getElementById('ask').onclick=async()=>{const askButton=document.getElementById('ask');askButton.disabled=true;statusEl.textContent='Asking AI… this can take several minutes on local models';document.getElementById('answer').textContent='Waiting for model response…';try{if(!context&&!fileScan)context=await api('/api/scan?'+deviceParam());const result=await api('/api/analyze',{prompt:document.getElementById('prompt').value,context:{system:context,fileScan},...llmSettings()});document.getElementById('answer').textContent=result.response||JSON.stringify(result,null,2);statusEl.textContent='Analysis complete';}catch(e){statusEl.textContent='AI request failed';document.getElementById('answer').textContent=e.message;}finally{askButton.disabled=false;}};
 </script></main></body></html>`;
 }
 
@@ -534,59 +550,102 @@ async function readBody(req) {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
 }
 
-async function ollamaJson(pathname, options = {}) {
+function getAbortSignal(timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
+  if (AbortSignal.timeout) return AbortSignal.timeout(timeoutMs);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), timeoutMs).unref?.();
+  return controller.signal;
+}
+
+function normalizeOllamaBaseUrl(value) {
+  return String(value || OLLAMA_BASE_URL).trim().replace(/\/+$/, '');
+}
+
+function ollamaErrorMessage(error, baseUrl = OLLAMA_BASE_URL) {
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+    return `Ollama request to ${baseUrl} timed out after ${Math.round(OLLAMA_REQUEST_TIMEOUT_MS / 1000)} seconds. Confirm Ollama is running, use a smaller model, or increase OLLAMA_REQUEST_TIMEOUT_MS.`;
+  }
+  if (/ECONNREFUSED|fetch failed|ENOTFOUND|EHOSTUNREACH|network/i.test(error?.message || '')) {
+    return `Could not reach Ollama at ${baseUrl}. Start it with "ollama serve", verify the endpoint URL, and ensure the firewall allows connections to port 11434.`;
+  }
+  return `Ollama request to ${baseUrl} failed: ${error.message}`;
+}
+
+async function ollamaJson(pathname, options = {}, baseUrl = OLLAMA_BASE_URL) {
+  const target = normalizeOllamaBaseUrl(baseUrl);
   let response;
   try {
-    response = await fetch(`${OLLAMA_HOST}${pathname}`, {
+    response = await fetch(`${target}${pathname}`, {
       ...options,
       headers: { 'content-type': 'application/json', ...(options.headers || {}) },
       signal: options.signal || getAbortSignal(OLLAMA_REQUEST_TIMEOUT_MS)
     });
   } catch (error) {
-    throw new Error(describeFetchError(error));
+    throw new Error(ollamaErrorMessage(error, target));
   }
   const text = await response.text();
   let data = {};
   if (text) {
-    try { data = JSON.parse(text); } catch (_) { data = { output: text }; }
+    try { data = JSON.parse(text); } catch (_) { throw new Error(`Malformed Ollama response from ${target}${pathname}: ${text.slice(0, 300)}`); }
   }
-  if (!response.ok) throw new Error(`Ollama returned HTTP ${response.status}: ${text || response.statusText}`);
+  if (!response.ok) {
+    const detail = data.error || text || response.statusText;
+    if (response.status === 404 && /model/i.test(detail)) throw new Error(`Ollama model is not installed or not available at ${target}: ${detail}`);
+    throw new Error(`Ollama returned HTTP ${response.status} from ${target}${pathname}: ${detail}`);
+  }
   return data;
 }
 
-async function listOllamaModels() {
-  const tags = await ollamaJson('/api/tags');
+async function listOllamaModels(baseUrl = OLLAMA_BASE_URL) {
+  const target = normalizeOllamaBaseUrl(baseUrl);
+  const tags = await ollamaJson('/api/tags', {}, target);
   let running = [];
   try {
-    const ps = await ollamaJson('/api/ps');
+    const ps = await ollamaJson('/api/ps', {}, target);
     running = Array.isArray(ps.models) ? ps.models : [];
   } catch (_) {
     running = [];
   }
-  return { host: OLLAMA_HOST, defaultModel: OLLAMA_MODEL, models: Array.isArray(tags.models) ? tags.models : [], running };
+  return { provider: LLM_PROVIDER, host: target, defaultModel: OLLAMA_MODEL, contextSize: LLM_CONTEXT_SIZE, temperature: LLM_TEMPERATURE, systemPrompt: DEFAULT_SYSTEM_PROMPT, models: Array.isArray(tags.models) ? tags.models : [], running };
 }
 
-async function pullOllamaModel(name) {
+async function testOllamaConnection(baseUrl = OLLAMA_BASE_URL, model = OLLAMA_MODEL) {
+  const models = await listOllamaModels(baseUrl);
+  const installed = models.models.some(item => item.name === model);
+  return { ...models, ok: true, selectedModel: model, installed, warning: installed ? null : `Model ${model} is not installed at ${models.host}. Pull it before using it, or choose an installed model.` };
+}
+
+async function pullOllamaModel(name, baseUrl = OLLAMA_BASE_URL) {
   if (!name || !String(name).trim()) throw new Error('Model name is required');
-  return ollamaJson('/api/pull', { method: 'POST', body: JSON.stringify({ name: String(name).trim(), stream: false }) });
+  return ollamaJson('/api/pull', { method: 'POST', body: JSON.stringify({ name: String(name).trim(), stream: false }) }, baseUrl);
 }
 
-async function deleteOllamaModel(name) {
+async function deleteOllamaModel(name, baseUrl = OLLAMA_BASE_URL) {
   if (!name || !String(name).trim()) throw new Error('Model name is required');
-  return ollamaJson('/api/delete', { method: 'DELETE', body: JSON.stringify({ name: String(name).trim() }) });
+  return ollamaJson('/api/delete', { method: 'DELETE', body: JSON.stringify({ name: String(name).trim() }) }, baseUrl);
 }
 
-async function findInstalledModel(requestedModel) {
+async function ensureDesktopOllama() {
+  const device = DEVICES.find(d => d.id === 'desktop-glpggos');
+  if (!device) throw new Error('desktop-glpggos device is not configured');
+  const cmd = [
+    '$ErrorActionPreference = "SilentlyContinue"',
+    '$existing = Get-Process ollama -ErrorAction SilentlyContinue',
+    'if (-not $existing) { Start-Process -FilePath ollama -ArgumentList "serve" -WindowStyle Hidden; Start-Sleep -Seconds 2 }',
+    '$running = Get-Process ollama -ErrorAction SilentlyContinue',
+    '[pscustomobject]@{running=[bool]$running; processes=@($running | Select-Object -ExpandProperty Id)} | ConvertTo-Json -Compress'
+  ].join('; ');
+  const raw = await sshDeviceCommand('Ensure desktop Ollama is running', device, powershellCommand(cmd), 15000);
+  return { ok: raw.ok, remoteHost: device.host, output: raw.output, help: raw.help };
+}
+
+async function findInstalledModel(requestedModel, baseUrl = OLLAMA_BASE_URL) {
   try {
-    const response = await fetch(`${OLLAMA_HOST}/api/tags`);
-    if (!response.ok) return null;
-    const data = await response.json();
+    const data = await ollamaJson('/api/tags', {}, baseUrl);
     const models = Array.isArray(data.models) ? data.models : [];
     const exact = models.find(model => model.name === requestedModel);
     if (exact) return exact.name;
-
-    // If "qwen2.5-coder" is configured but "qwen2.5-coder:0.5b" is installed,
-    // retry with the tagged name so existing cards keep working.
     const taggedMatch = models.find(model => model.name && model.name.startsWith(`${requestedModel}:`));
     return taggedMatch ? taggedMatch.name : null;
   } catch (error) {
@@ -640,92 +699,85 @@ function compactContextForModel(context) {
   return serialized;
 }
 
-function getAbortSignal(timeoutMs) {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
-  if (AbortSignal.timeout) return AbortSignal.timeout(timeoutMs);
-
-  const controller = new AbortController();
-  setTimeout(() => controller.abort(), timeoutMs).unref?.();
-  return controller.signal;
-}
-
-function describeFetchError(error) {
-  if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
-    return `Ollama request timed out after ${Math.round(OLLAMA_REQUEST_TIMEOUT_MS / 1000)} seconds. Increase OLLAMA_REQUEST_TIMEOUT_MS or use a smaller/faster model.`;
-  }
-  return `Could not reach Ollama at ${OLLAMA_HOST}: ${error.message}. If the model is still running, check that OLLAMA_HOST is reachable from this process and try increasing OLLAMA_REQUEST_TIMEOUT_MS.`;
-}
-
-async function readOllamaStream(response) {
-  const decoder = new TextDecoder();
-  let buffered = '';
-  let fullResponse = '';
-  let finalData = null;
-
-  for await (const chunk of response.body) {
-    buffered += decoder.decode(chunk, { stream: true });
-    const lines = buffered.split('\n');
-    buffered = lines.pop() || '';
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const data = JSON.parse(line);
-      if (data.error) throw new Error(data.error);
-      if (data.response) fullResponse += data.response;
-      if (data.done) finalData = data;
-    }
-  }
-
-  buffered += decoder.decode();
-  if (buffered.trim()) {
-    const data = JSON.parse(buffered);
-    if (data.error) throw new Error(data.error);
-    if (data.response) fullResponse += data.response;
-    if (data.done) finalData = data;
-  }
-
-  return { ...(finalData || {}), response: fullResponse };
-}
-
-async function generateWithModel(model, prompt, context) {
+function buildChatMessages(prompt, context, systemPrompt = DEFAULT_SYSTEM_PROMPT) {
   const compactContext = compactContextForModel(context);
+  return [
+    { role: 'system', content: systemPrompt || DEFAULT_SYSTEM_PROMPT },
+    { role: 'user', content: ['Task:', prompt, '', 'Relevant compact JSON context:', compactContext, '', 'Respond with concise findings and exact next steps. If code changes are needed, provide concrete file paths and patch-style edits.'].join('\n') }
+  ];
+}
+
+async function generateWithModel(model, prompt, context, settings = {}) {
+  const baseUrl = normalizeOllamaBaseUrl(settings.baseUrl || OLLAMA_BASE_URL);
+  const selectedModel = model || OLLAMA_MODEL;
+  const fallbackModel = settings.fallbackModel || OLLAMA_MODEL;
+  const body = {
+    model: selectedModel,
+    stream: true,
+    messages: buildChatMessages(prompt, context, settings.systemPrompt),
+    options: {
+      num_ctx: Number(settings.contextSize || LLM_CONTEXT_SIZE),
+      temperature: Number(settings.temperature ?? LLM_TEMPERATURE),
+      num_predict: OLLAMA_NUM_PREDICT
+    }
+  };
+
   let response;
   try {
-    response = await fetch(`${OLLAMA_HOST}/api/generate`, {
+    response = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       signal: getAbortSignal(OLLAMA_REQUEST_TIMEOUT_MS),
-      body: JSON.stringify({
-        model,
-        stream: true,
-        options: {
-          num_ctx: OLLAMA_NUM_CTX,
-          num_predict: OLLAMA_NUM_PREDICT
-        },
-        prompt: `${prompt}\n\nUse only this compact JSON context. If details are missing, say what to inspect next.\n${compactContext}`
-      })
+      body: JSON.stringify(body)
     });
   } catch (error) {
-    throw new Error(describeFetchError(error));
+    throw new Error(ollamaErrorMessage(error, baseUrl));
   }
 
   if (!response.ok) {
     const errorText = await response.text();
-    const installedModel = response.status === 404 ? await findInstalledModel(model) : null;
-    if (installedModel && installedModel !== model) {
-      console.log(`Ollama model ${model} was not found; retrying with installed model ${installedModel}`);
-      return generateWithModel(installedModel, prompt, context);
+    const installedModel = response.status === 404 ? await findInstalledModel(selectedModel, baseUrl) : null;
+    if (!installedModel && fallbackModel && fallbackModel !== selectedModel) {
+      return { ...(await generateWithModel(fallbackModel, prompt, context, { ...settings, fallbackModel: null, baseUrl })), fallbackFrom: selectedModel };
     }
-
-    throw new Error(`Ollama returned HTTP ${response.status}: ${errorText}. Check OLLAMA_MODEL; Ollama model names include tags such as qwen2.5-coder:0.5b.`);
+    throw new Error(`Ollama chat failed for model ${selectedModel} at ${baseUrl}: HTTP ${response.status}: ${errorText || response.statusText}`);
   }
 
-  const data = await readOllamaStream(response);
-  return model === OLLAMA_MODEL ? data : { ...data, model };
+  const data = await readOllamaChatStream(response);
+  return selectedModel === OLLAMA_MODEL ? data : { ...data, model: selectedModel };
 }
 
-async function analyze(prompt, context, model = OLLAMA_MODEL) {
-  return generateWithModel(model || OLLAMA_MODEL, prompt, context);
+async function readOllamaChatStream(response) {
+  const decoder = new TextDecoder();
+  let buffered = '';
+  let fullResponse = '';
+  let finalData = null;
+  for await (const chunk of response.body) {
+    buffered += decoder.decode(chunk, { stream: true });
+    const lines = buffered.split('\n');
+    buffered = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const data = JSON.parse(line);
+      if (data.error) throw new Error(data.error);
+      if (data.message?.content) fullResponse += data.message.content;
+      if (data.response) fullResponse += data.response;
+      if (data.done) finalData = data;
+    }
+  }
+  buffered += decoder.decode();
+  if (buffered.trim()) {
+    const data = JSON.parse(buffered);
+    if (data.error) throw new Error(data.error);
+    if (data.message?.content) fullResponse += data.message.content;
+    if (data.response) fullResponse += data.response;
+    if (data.done) finalData = data;
+  }
+  return { ...(finalData || {}), response: fullResponse };
+}
+
+async function analyze(prompt, context, settings = {}) {
+  return generateWithModel(settings.model || OLLAMA_MODEL, prompt, context, settings);
 }
 
 function resolveDevice(deviceId) {
@@ -772,23 +824,34 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, device ? (device.platform === 'windows' ? await collectWindowsFileScan(device, scanPath, depth) : await collectSshFileScan(device, scanPath, depth)) : await scanFiles(scanPath, depth));
       return;
     }
-    if (req.method === 'GET' && req.url === '/api/ollama/models') {
-      sendJson(res, 200, await listOllamaModels());
+    if (req.method === 'GET' && req.url.startsWith('/api/ollama/models')) {
+      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      if (url.pathname !== '/api/ollama/models') { sendJson(res, 404, { error: 'Not found' }); return; }
+      sendJson(res, 200, await listOllamaModels(url.searchParams.get('baseUrl') || OLLAMA_BASE_URL));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/ollama/test') {
+      const body = await readBody(req);
+      sendJson(res, 200, await testOllamaConnection(body.baseUrl, body.model || OLLAMA_MODEL));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/ollama/ensure-desktop') {
+      sendJson(res, 200, await ensureDesktopOllama());
       return;
     }
     if (req.method === 'POST' && req.url === '/api/ollama/pull') {
       const body = await readBody(req);
-      sendJson(res, 200, await pullOllamaModel(body.name));
+      sendJson(res, 200, await pullOllamaModel(body.name, body.baseUrl));
       return;
     }
     if (req.method === 'POST' && req.url === '/api/ollama/delete') {
       const body = await readBody(req);
-      sendJson(res, 200, await deleteOllamaModel(body.name));
+      sendJson(res, 200, await deleteOllamaModel(body.name, body.baseUrl));
       return;
     }
     if (req.method === 'POST' && req.url === '/api/analyze') {
       const body = await readBody(req);
-      sendJson(res, 200, await analyze(body.prompt || 'Analyze this system.', body.context || await collectSystemContext(), body.model));
+      sendJson(res, 200, await analyze(body.prompt || 'Analyze this system.', body.context || await collectSystemContext(), body));
       return;
     }
     sendJson(res, 404, { error: 'Not found' });
