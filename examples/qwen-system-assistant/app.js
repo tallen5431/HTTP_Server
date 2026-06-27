@@ -20,16 +20,19 @@ const MAX_FILE_SCAN_ENTRIES = 500;
 const MAX_FILE_SCAN_VISITED = 5000;
 
 const SSH_USER = process.env.SSH_USER || 'tj';
+const SSH_KEY = process.env.SSH_KEY || '';
 const SSH_BATCH_MODE = process.env.SSH_BATCH_MODE !== '0';
-const SSH_OPTS = [
-  ...(SSH_BATCH_MODE ? ['-o', 'BatchMode=yes'] : []),
-  '-o', 'StrictHostKeyChecking=accept-new',
-  '-o', 'ConnectTimeout=10'
-];
 
 const DEVICES = [
   { id: 'local', name: 'Local (this machine)', host: null, platform: 'linux' },
-  { id: 'desktop-glpggos', name: 'desktop-glpggos (Windows)', host: '100.98.112.1', platform: 'windows' },
+  {
+    id: 'desktop-glpggos',
+    name: 'desktop-glpggos (Windows)',
+    host: '100.98.112.1',
+    platform: 'windows',
+    sshUser: process.env.WINDOWS_SSH_USER || 'tjing',
+    sshKey: process.env.WINDOWS_SSH_KEY || '~/.ssh/id_ed25519_windows'
+  },
   { id: 'pi5', name: 'pi5 (Raspberry Pi)', host: '100.64.69.114', platform: 'linux' },
   { id: 'tj-jetson-desktop', name: 'tj-jetson-desktop (Jetson)', host: '100.83.4.72', platform: 'linux' },
   { id: 'tj-nucboxg3-plus', name: 'tj-nucboxg3-plus (NucBox)', host: '100.92.90.118', platform: 'linux' },
@@ -62,47 +65,99 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
-function sshPermissionHelp(output) {
-  if (!/Permission denied/i.test(output || '')) return null;
+function expandHome(value) {
+  if (!value) return value;
+  if (value === '~') return os.homedir();
+  if (value.startsWith('~/')) return path.join(os.homedir(), value.slice(2));
+  return value;
+}
+
+function getSshSettings(device) {
+  return {
+    sshUser: device.sshUser || SSH_USER,
+    sshKey: expandHome(device.sshKey || SSH_KEY),
+    host: device.host
+  };
+}
+
+function buildSshArgs(device, remoteCmd) {
+  const { sshUser, sshKey, host } = getSshSettings(device);
+  const opts = [
+    ...(SSH_BATCH_MODE ? ['-o', 'BatchMode=yes'] : []),
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'ConnectTimeout=10',
+    ...(sshKey ? ['-i', sshKey] : [])
+  ];
+  return { args: [...opts, `${sshUser}@${host}`, remoteCmd], sshUser, sshKey, host };
+}
+
+function sshPermissionHelp(output, settings) {
+  if (!/Permission denied|Authentication failed|Could not resolve|Connection timed out|No route to host|Connection refused/i.test(output || '')) return null;
+  const keyText = settings.sshKey ? ` using key ${settings.sshKey}` : '';
   return [
-    `SSH authentication failed for ${SSH_USER}.`,
-    'Tailscale provides network reachability, but SSH still requires a valid Linux account and SSH credentials on the target device.',
-    'Install this server\'s public key in ~/.ssh/authorized_keys on the target, set SSH_USER to the correct remote username, or set SSH_BATCH_MODE=0 if you intentionally want interactive password prompts in a terminal-run instance.'
+    `SSH connection failed for ${settings.sshUser}@${settings.host}${keyText}.`,
+    'Tailscale provides network reachability, but SSH still requires a valid account and SSH credentials on the target device.',
+    "Verify the device SSH username/key settings, install this server\'s public key in the target account authorized_keys when using Linux, or set SSH_BATCH_MODE=0 if you intentionally want interactive password prompts in a terminal-run instance."
   ].join(' ');
 }
 
-function sshCommand(label, host, remoteCmd, timeout = 10000) {
+function sshDeviceCommand(label, device, remoteCmd, timeout = 10000) {
   return new Promise((resolve) => {
-    execFile('ssh', [...SSH_OPTS, `${SSH_USER}@${host}`, remoteCmd], { timeout, maxBuffer: 1024 * 512 }, (error, stdout, stderr) => {
+    const settings = buildSshArgs(device, remoteCmd);
+    execFile('ssh', settings.args, { timeout, maxBuffer: 1024 * 512 }, (error, stdout, stderr) => {
       const output = String(stdout || stderr || error?.message || '').slice(0, MAX_OUTPUT);
       resolve({
         label,
         command: remoteCmd,
         ok: !error,
         output,
-        help: sshPermissionHelp(output)
+        help: sshPermissionHelp(output, settings)
       });
     });
   });
 }
 
-async function collectSshSystemContext(host) {
+async function collectSshSystemContext(device) {
   const checks = await Promise.all([
-    sshCommand('Disk usage', host, 'df -h -x tmpfs -x devtmpfs 2>/dev/null', 8000),
-    sshCommand('Block devices', host, 'lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS,MODEL 2>/dev/null || echo "lsblk unavailable"', 8000),
-    sshCommand('Top memory processes', host, "ps -eo pid,ppid,comm,%mem,%cpu,args --sort=-%mem 2>/dev/null | head -40 || ps aux 2>/dev/null | head -40", 8000),
-    sshCommand('Network addresses', host, 'ip -brief addr 2>/dev/null || ifconfig 2>/dev/null | head -60', 8000),
-    sshCommand('Listening TCP/UDP services', host, 'ss -tulpn 2>/dev/null || netstat -tulpn 2>/dev/null | head -40', 8000),
-    sshCommand('Recent journal errors', host, 'journalctl -p 3 -n 50 --no-pager 2>/dev/null || dmesg --level=err,crit,alert,emerg 2>/dev/null | tail -50', 10000),
-    sshCommand('System info', host, 'uname -a && uptime && free -h 2>/dev/null', 8000)
+    sshDeviceCommand('Disk usage', device, 'df -h -x tmpfs -x devtmpfs 2>/dev/null', 8000),
+    sshDeviceCommand('Block devices', device, 'lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS,MODEL 2>/dev/null || echo "lsblk unavailable"', 8000),
+    sshDeviceCommand('Top memory processes', device, "ps -eo pid,ppid,comm,%mem,%cpu,args --sort=-%mem 2>/dev/null | head -40 || ps aux 2>/dev/null | head -40", 8000),
+    sshDeviceCommand('Network addresses', device, 'ip -brief addr 2>/dev/null || ifconfig 2>/dev/null | head -60', 8000),
+    sshDeviceCommand('Listening TCP/UDP services', device, 'ss -tulpn 2>/dev/null || netstat -tulpn 2>/dev/null | head -40', 8000),
+    sshDeviceCommand('Recent journal errors', device, 'journalctl -p 3 -n 50 --no-pager 2>/dev/null || dmesg --level=err,crit,alert,emerg 2>/dev/null | tail -50', 10000),
+    sshDeviceCommand('System info', device, 'uname -a && uptime && free -h 2>/dev/null', 8000)
   ]);
-  return { collectedAt: new Date().toISOString(), remoteHost: host, checks };
+  return { collectedAt: new Date().toISOString(), remoteHost: device.host, platform: 'linux', checks };
 }
 
-async function collectSshFileScan(host, remotePath, depth) {
+function powershellCommand(command) {
+  return `powershell -NoProfile -NonInteractive -Command ${shellQuote(command)}`;
+}
+
+async function collectWindowsSystemContext(device) {
+  const checks = await Promise.all([
+    sshDeviceCommand('Windows identity', device, powershellCommand('hostname; whoami'), 8000),
+    sshDeviceCommand('OS info', device, powershellCommand('Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,LastBootUpTime | Format-List'), 10000),
+    sshDeviceCommand('Disk usage', device, powershellCommand('Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free,Root | Format-Table -AutoSize'), 10000),
+    sshDeviceCommand('Top memory processes', device, powershellCommand('Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 25 Id,ProcessName,CPU,WorkingSet64 | Format-Table -AutoSize'), 10000),
+    sshDeviceCommand('Network addresses', device, powershellCommand('Get-NetIPAddress | Select-Object InterfaceAlias,IPAddress,AddressFamily,PrefixLength | Format-Table -AutoSize'), 10000),
+    sshDeviceCommand('Listening TCP ports', device, powershellCommand('Get-NetTCPConnection -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table -AutoSize'), 10000)
+  ]);
+  return { collectedAt: new Date().toISOString(), remoteHost: device.host, platform: 'windows', checks };
+}
+
+function windowsFileUnsupported(device) {
+  return {
+    error: 'Windows file browsing/scanning is not implemented yet. System scan is supported.',
+    remoteHost: device.host,
+    platform: 'windows'
+  };
+}
+
+async function collectSshFileScan(device, remotePath, depth) {
   const safeDepth = clampDepth(depth);
   const findCmd = `find ${shellQuote(remotePath)} -maxdepth ${safeDepth} -printf '%P\\t%y\\t%s\\t%T@\\t%#m\\n' 2>/dev/null | head -600`;
-  const raw = await sshCommand('File scan', host, findCmd, 20000);
+  const raw = await sshDeviceCommand('File scan', device, findCmd, 20000);
 
   const entries = [];
   let files = 0, directories = 0, totalFileBytes = 0;
@@ -122,7 +177,7 @@ async function collectSshFileScan(host, remotePath, depth) {
   const fileEntries = entries.filter(e => e.type === 'file');
   return {
     root: remotePath,
-    remoteHost: host,
+    remoteHost: device.host,
     maxDepth: safeDepth,
     collectedAt: new Date().toISOString(),
     summary: { files, directories, totalFileBytes, visited: entries.length, truncated: entries.length >= 500 },
@@ -146,17 +201,17 @@ function rememberTop(list, entry, scoreKey, limit = 20) {
 }
 
 
-async function browseSshDirectories(host, remotePath) {
+async function browseSshDirectories(device, remotePath) {
   const root = remotePath || '/';
   const cmd = `find ${shellQuote(root)} -mindepth 1 -maxdepth 1 -type d -printf '%f\t%p\n' 2>/dev/null | sort | head -200`;
-  const raw = await sshCommand('Directory browse', host, cmd, 10000);
+  const raw = await sshDeviceCommand('Directory browse', device, cmd, 10000);
   const directories = raw.output.split('\n').filter(Boolean).map((line) => {
     const [name, fullPath] = line.split('\t');
     return { name, path: fullPath || name };
   });
   return {
     root,
-    remoteHost: host,
+    remoteHost: device.host,
     parent: root === '/' ? null : path.posix.dirname(root.replace(/\/+$/, '') || '/'),
     directories,
     errors: raw.ok ? [] : [{ message: raw.output, help: raw.help }]
@@ -350,7 +405,7 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background
   <h2>File Scan</h2>
   <div class="row"><label>Path <input id="filePath" type="text" value="${defaultFilePath}"></label><label>Depth <input id="fileDepth" type="number" min="0" max="${MAX_FILE_SCAN_DEPTH}" value="2"></label><button id="browseFiles">Browse</button><button id="fileUp">Up</button><button id="fileHome">Home</button><button id="fileScan">Scan Files</button></div>
   <div id="fileBrowser" class="browser muted">Click Browse to list child folders for the selected path.</div>
-  <p class="muted">Scans file names and metadata only. For remote devices, uses SSH + <code>find</code>. Depth 0 = selected path only; up to ${MAX_FILE_SCAN_DEPTH} levels.</p>
+  <p class="muted">Scans file names and metadata only. For Linux remote devices, uses SSH + <code>find</code>. Windows file browsing/scanning is not implemented yet. Depth 0 = selected path only; up to ${MAX_FILE_SCAN_DEPTH} levels.</p>
 </div>
 <div class="card"><h2>Question</h2><textarea id="prompt">Review this compact Linux system summary. List the top 3 risks or issues and give safe next-step commands. Be concise.</textarea></div>
 <div class="card"><h2>Collected Context</h2><pre id="context">No scan yet.</pre></div>
@@ -562,7 +617,7 @@ const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       if (url.pathname !== '/api/scan') { sendJson(res, 404, { error: 'Not found' }); return; }
       const device = resolveDevice(url.searchParams.get('device'));
-      sendJson(res, 200, device ? await collectSshSystemContext(device.host) : await collectSystemContext());
+      sendJson(res, 200, device ? (device.platform === 'windows' ? await collectWindowsSystemContext(device) : await collectSshSystemContext(device)) : await collectSystemContext());
       return;
     }
     if (req.method === 'GET' && req.url.startsWith('/api/file-browse')) {
@@ -570,7 +625,7 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname !== '/api/file-browse') { sendJson(res, 404, { error: 'Not found' }); return; }
       const device = resolveDevice(url.searchParams.get('device'));
       const browsePath = url.searchParams.get('path') || os.homedir();
-      sendJson(res, 200, device ? await browseSshDirectories(device.host, browsePath) : await browseLocalDirectories(browsePath));
+      sendJson(res, 200, device ? (device.platform === 'windows' ? windowsFileUnsupported(device) : await browseSshDirectories(device, browsePath)) : await browseLocalDirectories(browsePath));
       return;
     }
     if (req.method === 'GET' && req.url.startsWith('/api/file-scan')) {
@@ -579,7 +634,7 @@ const server = http.createServer(async (req, res) => {
       const device = resolveDevice(url.searchParams.get('device'));
       const scanPath = url.searchParams.get('path') || os.homedir();
       const depth = url.searchParams.get('depth') || 2;
-      sendJson(res, 200, device ? await collectSshFileScan(device.host, scanPath, depth) : await scanFiles(scanPath, depth));
+      sendJson(res, 200, device ? (device.platform === 'windows' ? windowsFileUnsupported(device) : await collectSshFileScan(device, scanPath, depth)) : await scanFiles(scanPath, depth));
       return;
     }
     if (req.method === 'POST' && req.url === '/api/analyze') {
