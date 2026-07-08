@@ -14,6 +14,7 @@ A simple, self-configuring HTTP server manager that automatically detects your n
 - **🌐 Multi-program Support**: Manage multiple applications from a single interface
 - **🧠 Framework Detection**: Intelligently detects Flask, Django, FastAPI, Node.js, Streamlit and configures accordingly
 - **🎙️ Bundled Vosk Card**: Includes a ready-to-start sample voice transcription card powered by a local Vosk model
+- **📦 Bundled Inventory OCR Card**: Snap phone photos to organize, categorize, and count your stuff — pulls & runs `tallen5431/InventoryOCR`
 
 ## Prerequisites
 
@@ -209,6 +210,33 @@ Before starting the card:
 3. Start the card and open the generated HTTPS Tailscale URL to upload a mono PCM WAV file for transcription.
 
 The bundled app defaults to `HOST=0.0.0.0` and `PORT=8090`. Its manager card uses `urlProtocol: "https"`, `preferTailscale: true`, and `omitPortInUrl: true`, so it displays a Tailscale Serve-style URL such as `https://your-machine.your-tailnet.ts.net` when a Tailscale hostname is configured or detectable. Set `tailscaleHostname` in `config.json` or `TAILSCALE_HOSTNAME` in the manager environment if the `tailscale` CLI is unavailable.
+
+### Bundled Inventory OCR
+
+The repository includes a card at `examples/inventory-ocr` that turns photos you
+take on your phone into an organized, searchable inventory — track **what** each
+item is, **where** it lives, **how many** you have, and attach photos. When the
+card starts, its `Start.sh` clones (or updates) the app from
+[`tallen5431/InventoryOCR`](https://github.com/tallen5431/InventoryOCR), creates
+a Python virtual environment, installs the requirements, and serves the Dash web
+app at the site root so the manager's **Open** link goes straight into it.
+
+The card starts on `HOST=0.0.0.0` and `PORT=8001` and generates a URL like
+`http://<detected-ip>:8001`. Useful env vars (edit them from the card's **Edit**
+dialog):
+
+- `URL_PREFIX` — leave empty to serve at the root (default). Set to `/inventory`
+  only if you place it behind a reverse proxy on that path.
+- `INVENTORY_OCR_BRANCH` — which branch of the InventoryOCR repo to run
+  (default `main`).
+- `GITHUB_TOKEN` — a GitHub PAT with repo read scope, needed only if the
+  repository is private.
+
+Your inventory data and photos live inside the cloned `examples/inventory-ocr/src`
+folder and are ignored by git, so they persist across restarts and updates.
+Optional OCR text extraction needs the Tesseract binary
+(`sudo apt-get install -y tesseract-ocr`); everything else works without it. See
+`examples/inventory-ocr/README.md` for details.
 
 ## API Endpoints
 

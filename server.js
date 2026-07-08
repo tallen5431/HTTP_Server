@@ -69,6 +69,23 @@ function getBundledQwenSystemAssistantProgram() {
   };
 }
 
+function getBundledInventoryOcrProgram() {
+  const programPath = path.join(__dirname, 'examples', 'inventory-ocr');
+  return {
+    id: 'inventory-ocr',
+    name: 'Inventory OCR',
+    path: programPath,
+    env: {
+      HOST: '0.0.0.0',
+      PORT: '8001',
+      URL_PREFIX: '',
+      INVENTORY_OCR_BRANCH: process.env.INVENTORY_OCR_BRANCH || 'main',
+      GITHUB_TOKEN: process.env.GITHUB_TOKEN || ''
+    },
+    comment: 'Snap phone photos to organize, categorize, and count your stuff (location, quantity, notes, OCR). Start.sh clones tallen5431/InventoryOCR and runs it at the site root. Set GITHUB_TOKEN if the repo is private.'
+  };
+}
+
 function ensureBundledPrograms(config) {
   if (!config.programs.some(program => isVoskProgram(program))) {
     config.programs.push(getBundledVoskTranscriberProgram());
@@ -78,6 +95,9 @@ function ensureBundledPrograms(config) {
   }
   if (!config.programs.some(program => isQwenSystemAssistantProgram(program))) {
     config.programs.push(getBundledQwenSystemAssistantProgram());
+  }
+  if (!config.programs.some(program => isInventoryOcrProgram(program))) {
+    config.programs.push(getBundledInventoryOcrProgram());
   }
   return config;
 }
@@ -114,7 +134,8 @@ function preserveExistingProgramUrlOptions(newConfig, existingConfig) {
       program.id === newProgram.id ||
       (isVoskProgram(program) && isVoskProgram(newProgram)) ||
       (isCodeSmithProgram(program) && isCodeSmithProgram(newProgram)) ||
-      (isQwenSystemAssistantProgram(program) && isQwenSystemAssistantProgram(newProgram))
+      (isQwenSystemAssistantProgram(program) && isQwenSystemAssistantProgram(newProgram)) ||
+      (isInventoryOcrProgram(program) && isInventoryOcrProgram(newProgram))
     );
     mergeExistingProgramUrlOptions(newProgram, existingProgram);
   }
@@ -162,7 +183,7 @@ function loadConfig() {
       // Fallback default config so the UI can still start.
       const defaultConfig = {
         hostname: 'auto',
-        programs: [getBundledVoskTranscriberProgram(), getBundledCodeSmithProgram(), getBundledQwenSystemAssistantProgram()]
+        programs: [getBundledVoskTranscriberProgram(), getBundledCodeSmithProgram(), getBundledQwenSystemAssistantProgram(), getBundledInventoryOcrProgram()]
       };
       cachedConfig = defaultConfig;
       cachedConfigMtimeMs = null;
@@ -207,6 +228,14 @@ function isQwenSystemAssistantProgram(program) {
     program.id === 'qwen-system-assistant' ||
     /qwen system assistant/i.test(program.name || '') ||
     /qwen-system-assistant/.test(program.path || '')
+  );
+}
+
+function isInventoryOcrProgram(program) {
+  return program && (
+    program.id === 'inventory-ocr' ||
+    /^inventory\s*ocr$/i.test(program.name || '') ||
+    /inventory-ocr/.test(program.path || '')
   );
 }
 

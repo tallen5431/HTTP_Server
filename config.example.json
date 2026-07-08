@@ -83,6 +83,19 @@
         "SSH_USER": "tj"
       },
       "comment": "Bundled local AI assistant. Connects to Ollama on desktop-glpggos via Tailscale (100.98.112.1:11434). Use the device selector in the UI to SSH into Tailscale devices for remote system/file scans."
+    },
+    {
+      "id": "inventory-ocr",
+      "name": "Inventory OCR",
+      "path": "/workspace/HTTP_Server/examples/inventory-ocr",
+      "env": {
+        "HOST": "0.0.0.0",
+        "PORT": "8001",
+        "URL_PREFIX": "",
+        "INVENTORY_OCR_BRANCH": "main",
+        "GITHUB_TOKEN": ""
+      },
+      "comment": "Snap phone photos to organize, categorize, and count your stuff (location, quantity, notes, optional OCR). Start.sh clones tallen5431/InventoryOCR and serves it at http://<detected-ip>:8001. Set GITHUB_TOKEN to a GitHub PAT (repo read scope) if the repo is private."
     }
   ]
 }
