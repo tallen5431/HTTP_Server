@@ -231,6 +231,11 @@ dialog):
   (default `main`).
 - `GITHUB_TOKEN` — a GitHub PAT with repo read scope, needed only if the
   repository is private.
+- `OLLAMA_HOST` / `OLLAMA_VISION_MODEL` — the app's **Identify from photo**
+  button asks a local Ollama vision model what an item is (plus specs, estimated
+  value, dimensions). Defaults to the desktop Ollama via Tailscale
+  (`http://100.98.112.1:11434`) and `llama3.2-vision`; pull a vision model first
+  (`ollama pull llama3.2-vision`).
 
 Your inventory data and photos live inside the cloned `examples/inventory-ocr/src`
 folder and are ignored by git, so they persist across restarts and updates.

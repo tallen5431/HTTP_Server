@@ -80,9 +80,11 @@ function getBundledInventoryOcrProgram() {
       PORT: '8001',
       URL_PREFIX: '',
       INVENTORY_OCR_BRANCH: process.env.INVENTORY_OCR_BRANCH || 'main',
-      GITHUB_TOKEN: process.env.GITHUB_TOKEN || ''
+      GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
+      OLLAMA_HOST: process.env.OLLAMA_HOST || 'http://100.98.112.1:11434',
+      OLLAMA_VISION_MODEL: process.env.OLLAMA_VISION_MODEL || 'llama3.2-vision'
     },
-    comment: 'Snap phone photos to organize, categorize, and count your stuff (location, quantity, notes, OCR). Start.sh clones tallen5431/InventoryOCR and runs it at the site root. Set GITHUB_TOKEN if the repo is private.'
+    comment: 'Snap phone photos to organize, categorize, and count your stuff (location, quantity, notes, OCR). "Identify from photo" uses a local Ollama vision model (OLLAMA_HOST/OLLAMA_VISION_MODEL) — pull one first, e.g. `ollama pull llama3.2-vision`. Start.sh clones tallen5431/InventoryOCR and runs it at the site root. Set GITHUB_TOKEN if the repo is private.'
   };
 }
 

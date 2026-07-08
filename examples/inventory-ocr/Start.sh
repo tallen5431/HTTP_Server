@@ -52,6 +52,12 @@ export PORT="${PORT:-8001}"
 # behind a reverse proxy at that path.
 export URL_PREFIX="${URL_PREFIX:-}"
 
+# "Identify from photo" uses a local Ollama vision model. Defaults match the
+# other cards (desktop Ollama via Tailscale). Pull a vision model first, e.g.
+#   ollama pull llama3.2-vision
+export OLLAMA_HOST="${OLLAMA_HOST:-http://100.98.112.1:11434}"
+export OLLAMA_VISION_MODEL="${OLLAMA_VISION_MODEL:-llama3.2-vision}"
+
 # Optional: text extraction from photos needs the Tesseract binary on PATH.
 # Inventory management works fine without it (OCR just returns empty text).
 if ! command -v tesseract >/dev/null 2>&1; then

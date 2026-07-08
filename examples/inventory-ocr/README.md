@@ -20,6 +20,8 @@ the Dash web app.
 - 📊 **At-a-glance totals** — KPI cards (items, total quantity, low-stock,
   categories) and an overview grouped by location and by category.
 - 📤 **Export** — one-click CSV export of your whole inventory.
+- 🔎 **Identify from photo** — a local Ollama vision model suggests what an item
+  is, its specs, an estimated value, and dimensions (read-only).
 - 🧪 **OCR (optional)** — pull text off labels/boxes with the OCR Lab when the
   Tesseract binary is installed.
 
@@ -35,6 +37,21 @@ The card runs with these environment variables (edit them from the manager's
 | `URL_PREFIX`        | *(empty)* | Serve at site root. Set to `/inventory` only behind a reverse proxy on that path. |
 | `INVENTORY_OCR_BRANCH` | `main` | Branch of the InventoryOCR repo to run |
 | `GITHUB_TOKEN`      | *(unset)* | GitHub PAT (repo read scope) if the repo is private |
+| `OLLAMA_HOST`       | `http://100.98.112.1:11434` | Ollama server for "Identify from photo" |
+| `OLLAMA_VISION_MODEL` | `llama3.2-vision` | Vision model for identification (pull it first) |
+
+### Identify from photo
+
+The **🔎 Identify from photo** button asks a local Ollama vision model to
+describe an item from its picture (what it is, specs, estimated value,
+dimensions). Pull a vision model on your Ollama host first:
+
+```bash
+ollama pull llama3.2-vision   # or qwen2.5vl / llava / moondream
+```
+
+Point `OLLAMA_HOST` / `OLLAMA_VISION_MODEL` at your server from the card's
+**Edit** dialog. The photo stays on your network unless `OLLAMA_HOST` is remote.
 
 ## Data & persistence
 
