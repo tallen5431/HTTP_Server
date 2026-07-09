@@ -96,9 +96,11 @@
         "GITHUB_TOKEN": "",
         "OLLAMA_HOST": "http://100.98.112.1:11434",
         "OLLAMA_VISION_MODEL": "llama3.2-vision",
-        "GOOGLE_VISION_API_KEY": ""
+        "SERPAPI_KEY": "",
+        "GOOGLE_VISION_API_KEY": "",
+        "WEB_DETECT_PROVIDER": "auto"
       },
-      "comment": "Snap phone photos to organize, categorize, and count your stuff (location, quantity, notes, bins, optional OCR). 'Identify from photo' uses a local Ollama vision model (OLLAMA_HOST/OLLAMA_VISION_MODEL); pull one first, e.g. 'ollama pull llama3.2-vision'. Set GOOGLE_VISION_API_KEY to also do automatic reverse-image (Lens-style) product identification (leave empty to stay fully local). Start.sh clones tallen5431/InventoryOCR and serves it at http://<detected-ip>:8001. Set GITHUB_TOKEN to a GitHub PAT (repo read scope) if the repo is private."
+      "comment": "Snap phone photos to organize, categorize, and count your stuff (location, quantity, notes, bins, optional OCR). 'Identify from photo' uses a local Ollama vision model (OLLAMA_HOST/OLLAMA_VISION_MODEL); pull one first, e.g. 'ollama pull llama3.2-vision'. For automatic web identification (real product name + price), set SERPAPI_KEY (free tier, no card) or GOOGLE_VISION_API_KEY (free tier needs billing); leave empty to stay fully local. Start.sh clones tallen5431/InventoryOCR and serves it at http://<detected-ip>:8001. Set GITHUB_TOKEN to a GitHub PAT (repo read scope) if the repo is private."
     }
   ]
 }
