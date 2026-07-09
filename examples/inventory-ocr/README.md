@@ -39,6 +39,9 @@ The card runs with these environment variables (edit them from the manager's
 | `GITHUB_TOKEN`      | *(unset)* | GitHub PAT (repo read scope) if the repo is private |
 | `OLLAMA_HOST`       | `http://100.98.112.1:11434` | Ollama server for "Identify from photo" |
 | `OLLAMA_VISION_MODEL` | `llama3.2-vision` | Vision model for identification (pull it first) |
+| `SERPAPI_KEY`       | *(unset)* | Free web lookup (SerpApi — 100/mo, no card): real product name, tags, links, price. |
+| `GOOGLE_VISION_API_KEY` | *(unset)* | Alternative reverse-image lookup (Google Vision; free tier needs billing). |
+| `WEB_DETECT_PROVIDER` | `auto` | `auto` / `serpapi` / `google_vision` / `none`. |
 
 ### Identify from photo
 
@@ -52,6 +55,13 @@ ollama pull llama3.2-vision   # or qwen2.5vl / llava / moondream
 
 Point `OLLAMA_HOST` / `OLLAMA_VISION_MODEL` at your server from the card's
 **Edit** dialog. The photo stays on your network unless `OLLAMA_HOST` is remote.
+
+For much more accurate, **automatic** product identification, set a web-lookup
+key. The easiest free option is **`SERPAPI_KEY`** (SerpApi's free tier is 100
+searches/month with no credit card) — Identify then fills in the exact product
+name, tags, a product link, and a **real price**. `GOOGLE_VISION_API_KEY` is an
+alternative (reverse-image from bytes; its free tier needs billing enabled).
+Leave the keys empty to stay fully local.
 
 ## Data & persistence
 

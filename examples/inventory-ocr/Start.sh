@@ -58,6 +58,18 @@ export URL_PREFIX="${URL_PREFIX:-}"
 export OLLAMA_HOST="${OLLAMA_HOST:-http://100.98.112.1:11434}"
 export OLLAMA_VISION_MODEL="${OLLAMA_VISION_MODEL:-llama3.2-vision}"
 
+# Optional: automatic web identification during "Identify from photo". Leave the
+# keys empty to stay fully local. A request only goes out when you press Identify
+# and a provider is configured.
+#   SERPAPI_KEY           Free web lookup (SerpApi — 100/mo, no credit card).
+#                         Real product name, tags, links, and price. Recommended.
+#   GOOGLE_VISION_API_KEY Alternative reverse-image (Google Vision; free tier
+#                         needs billing enabled).
+#   WEB_DETECT_PROVIDER   auto | serpapi | google_vision | none  (default auto)
+export SERPAPI_KEY="${SERPAPI_KEY:-}"
+export GOOGLE_VISION_API_KEY="${GOOGLE_VISION_API_KEY:-}"
+export WEB_DETECT_PROVIDER="${WEB_DETECT_PROVIDER:-auto}"
+
 # Optional: text extraction from photos needs the Tesseract binary on PATH.
 # Inventory management works fine without it (OCR just returns empty text).
 if ! command -v tesseract >/dev/null 2>&1; then
