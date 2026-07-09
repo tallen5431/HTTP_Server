@@ -39,6 +39,7 @@ The card runs with these environment variables (edit them from the manager's
 | `GITHUB_TOKEN`      | *(unset)* | GitHub PAT (repo read scope) if the repo is private |
 | `OLLAMA_HOST`       | `http://100.98.112.1:11434` | Ollama server for "Identify from photo" |
 | `OLLAMA_VISION_MODEL` | `llama3.2-vision` | Vision model for identification (pull it first) |
+| `GOOGLE_VISION_API_KEY` | *(unset)* | Enables automatic reverse-image (Lens-style) product ID via Google Vision. Empty = fully local. |
 
 ### Identify from photo
 
@@ -52,6 +53,12 @@ ollama pull llama3.2-vision   # or qwen2.5vl / llava / moondream
 
 Point `OLLAMA_HOST` / `OLLAMA_VISION_MODEL` at your server from the card's
 **Edit** dialog. The photo stays on your network unless `OLLAMA_HOST` is remote.
+
+For much more accurate, **automatic** product identification, set
+`GOOGLE_VISION_API_KEY` (a Google Cloud key with the Vision API enabled). Identify
+then also does a reverse-image lookup and fills in the exact product name, tags,
+and a product link. It accepts the photo bytes directly, so it works on a private
+LAN; leave the key empty to stay fully local.
 
 ## Data & persistence
 

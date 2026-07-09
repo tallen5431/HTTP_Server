@@ -58,6 +58,12 @@ export URL_PREFIX="${URL_PREFIX:-}"
 export OLLAMA_HOST="${OLLAMA_HOST:-http://100.98.112.1:11434}"
 export OLLAMA_VISION_MODEL="${OLLAMA_VISION_MODEL:-llama3.2-vision}"
 
+# Optional: automatic reverse-image identification (Lens-style) via Google Cloud
+# Vision "Web Detection". Leave empty to stay fully local. When set, the photo is
+# sent to Google Vision only when you press Identify, so it works on a private LAN
+# without exposing the app publicly.
+export GOOGLE_VISION_API_KEY="${GOOGLE_VISION_API_KEY:-}"
+
 # Optional: text extraction from photos needs the Tesseract binary on PATH.
 # Inventory management works fine without it (OCR just returns empty text).
 if ! command -v tesseract >/dev/null 2>&1; then
