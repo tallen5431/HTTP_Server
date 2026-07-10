@@ -527,7 +527,7 @@ function startProgram(programId, config) {
   const startScript = path.join(program.path, 'Start.sh');
 
   if (!fs.existsSync(startScript)) {
-    console.warn(`Start script not found for program: ${programId}`);
+    throw new Error(`Start.sh not found at ${startScript}`);
   }
 
   const env = {
@@ -535,9 +535,14 @@ function startProgram(programId, config) {
     ...program.env
   };
 
+  // detached:true makes the child its own process-group leader so we can later
+  // signal the WHOLE group (see signalProcessTree). Many Start.sh scripts don't
+  // exec their app — "npm start" forks node, a bare "python app.py" forks python —
+  // so killing only bash would orphan the real process and leave its port bound.
   const proc = spawn('bash', [startScript], {
     cwd: program.path,
-    env
+    env,
+    detached: true
   });
 
   const logs = [];
@@ -602,18 +607,32 @@ function startProgram(programId, config) {
   };
 }
 
+// Signal the child's entire process group (negative PID). Because programs are
+// spawned detached, the bash child leads its own group, so this reaches whatever
+// the Start.sh forked (node under npm, python, a waitress worker…) instead of
+// leaving it orphaned and holding the port. Falls back to signalling just the
+// child, and swallows ESRCH when the group is already gone.
+function signalProcessTree(proc, signal) {
+  if (!proc || proc.pid == null) return;
+  try {
+    process.kill(-proc.pid, signal);
+  } catch (err) {
+    try { proc.kill(signal); } catch (_) { /* already exited */ }
+  }
+}
+
 function stopProgram(programId) {
   const proc = processes.get(programId);
   if (!proc || !proc.isRunning) {
     throw new Error('Program is not running');
   }
 
-  proc.kill('SIGTERM');
+  signalProcessTree(proc, 'SIGTERM');
 
-  // Force kill after 10 seconds if it hasn't exited yet
+  // Force kill the whole group after 10 seconds if it hasn't exited yet
   setTimeout(() => {
     if (proc.isRunning) {
-      proc.kill('SIGKILL');
+      signalProcessTree(proc, 'SIGKILL');
     }
   }, 10000);
 
@@ -766,7 +785,8 @@ function scaffoldStartScript(projectPath) {
       'cd "$(dirname "${BASH_SOURCE[0]}")"',
       '',
       'export HOST="${HOST:-0.0.0.0}"',
-      'export PORT="${PORT:-3000}"',
+      '# Default off 3000 — that is the manager\'s own port. Change to suit your app.',
+      'export PORT="${PORT:-8080}"',
       '',
       '[ -d node_modules ] || npm install',
       'npm start',
@@ -1129,7 +1149,7 @@ app.delete('/api/programs/:id', requireApiToken, (req, res) => {
     const proc = processes.get(programId);
     if (proc && proc.isRunning) {
       console.log(`[manager] Stopping program before removal: ${programId}`);
-      proc.kill('SIGTERM');
+      signalProcessTree(proc, 'SIGTERM');
     }
 
     // Remove from config
@@ -1239,11 +1259,11 @@ async function startServer() {
       process.exit(0);
     });
 
-    // Kill all running child processes
+    // Kill all running child processes (whole group each, so nothing is orphaned)
     for (const [id, proc] of processes.entries()) {
       if (proc.isRunning) {
         console.log(`Stopping ${id}...`);
-        proc.kill('SIGTERM');
+        signalProcessTree(proc, 'SIGTERM');
       }
     }
   });
