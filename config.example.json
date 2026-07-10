@@ -52,6 +52,16 @@
       "preferTailscale": true,
       "omitPortInUrl": true,
       "comment": "Generates an HTTPS Tailscale URL such as https://your-machine.your-tailnet.ts.net when a Tailscale hostname is configured/detectable. Set tailscaleHostname at the config root or TAILSCALE_HOSTNAME in the environment if the tailscale CLI is unavailable."
+    },
+    {
+      "id": "example-autostart-app",
+      "name": "Always-On Service",
+      "path": "/path/to/your/service",
+      "env": {
+        "PORT": "8091"
+      },
+      "autostart": true,
+      "comment": "Set autostart: true to launch this program automatically when the manager starts. Useful for services that should always be available."
     }
   ]
 }

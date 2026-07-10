@@ -1,0 +1,26 @@
+[Unit]
+Description=HTTP Server Manager
+Documentation=https://github.com/tallen5431/http_server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/user/HTTP_Server
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="NODE_ENV=production"
+Environment="CONFIG_FILE=/home/user/HTTP_Server/config.json"
+Environment="PROJECTS_DIR=/home/user/HTTP_Server/projects"
+Environment="PORT=3000"
+ExecStart=/usr/bin/node /home/user/HTTP_Server/server.js
+Restart=on-failure
+RestartSec=10s
+
+# Graceful shutdown
+KillMode=process
+KillSignal=SIGINT
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target

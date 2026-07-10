@@ -183,6 +183,12 @@ function validateConfig(config) {
       console.warn(`Program "${program.id}" has a non-string url; this will be ignored.`);
       delete program.url;
     }
+
+    // Validate autostart if present (should be boolean)
+    if (program.autostart !== undefined && typeof program.autostart !== 'boolean') {
+      console.warn(`Program "${program.id}" has a non-boolean autostart; this will be ignored.`);
+      delete program.autostart;
+    }
   });
 
   return true;
@@ -640,6 +646,25 @@ function stopProgram(programId) {
     id: programId,
     status: 'stopping'
   };
+}
+
+// Launch all programs marked with autostart: true
+function launchAutostart(config) {
+  if (!config || !Array.isArray(config.programs)) return;
+
+  const autostartPrograms = config.programs.filter(p => p.autostart === true);
+  if (autostartPrograms.length === 0) return;
+
+  console.log(`\n📦 Autostarting ${autostartPrograms.length} program(s)...`);
+  autostartPrograms.forEach(program => {
+    try {
+      const result = startProgram(program.id, config);
+      console.log(`  ✓ ${program.name} (${program.id}) started [PID ${result.pid}]`);
+    } catch (err) {
+      console.error(`  ✗ ${program.name} (${program.id}) failed to start: ${err.message}`);
+    }
+  });
+  console.log();
 }
 
 // Browse a directory and return discovered projects (without modifying config)
@@ -1248,6 +1273,9 @@ async function startServer() {
         console.log(`  http://${net.address}:${PORT}`);
       });
     });
+
+    // Launch any programs marked with autostart: true
+    launchAutostart(activeConfig);
   });
 
   // Graceful shutdown

@@ -166,6 +166,69 @@ Each program in the `programs` array has the following fields:
 - **hostname** (optional): Per-program hostname override.
 - **preferTailscale** (optional): When `true`, generated URLs prefer the configured/detected Tailscale MagicDNS hostname.
 - **omitPortInUrl** (optional): When `true`, generated URLs omit `:PORT`; useful for Tailscale Serve HTTPS endpoints that proxy port 443 to the local app.
+- **autostart** (optional): When `true`, the program will automatically start when the manager starts. Useful for services that should always be running.
+
+### Autostart on Boot
+
+You can configure programs to start automatically when the manager starts by setting `autostart: true` in your config:
+
+```json
+{
+  "hostname": "auto",
+  "programs": [
+    {
+      "id": "inventory",
+      "name": "InventoryOCR",
+      "path": "/home/user/HTTP_Server/projects/InventoryOCR",
+      "env": { "PORT": "8080" },
+      "autostart": true
+    },
+    {
+      "id": "api-server",
+      "name": "API Server",
+      "path": "/home/user/HTTP_Server/projects/api-server",
+      "env": { "PORT": "8081" },
+      "autostart": true
+    }
+  ]
+}
+```
+
+When the manager starts, any programs with `autostart: true` will launch automatically. This is useful for services that should always be available (e.g., inventory management, APIs, monitoring dashboards).
+
+#### Auto-Launch Manager on Boot (systemd)
+
+To have the HTTP Server Manager itself start automatically after a system reboot, install it as a systemd service:
+
+1. **Copy the service file:**
+   ```bash
+   sudo cp http-server-manager.service /etc/systemd/system/
+   ```
+
+2. **Edit paths if needed** (if your installation is in a different location):
+   ```bash
+   sudo nano /etc/systemd/system/http-server-manager.service
+   # Update WorkingDirectory and ExecStart paths to match your setup
+   ```
+
+3. **Enable and start the service:**
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable http-server-manager
+   sudo systemctl start http-server-manager
+   ```
+
+4. **Check status:**
+   ```bash
+   sudo systemctl status http-server-manager
+   ```
+
+5. **View logs:**
+   ```bash
+   sudo journalctl -u http-server-manager -f
+   ```
+
+The systemd service will automatically restart the manager if it crashes, and it will start on every boot. Combined with per-program `autostart: true` flags, this ensures your services are always running after a reboot.
 
 ### Environment Variables
 
