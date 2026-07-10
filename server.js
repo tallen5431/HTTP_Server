@@ -9,7 +9,10 @@ const WebSocket = require('ws');
 
 // Configuration
 const CONFIG_FILE = process.env.CONFIG_FILE || './config.json';
-const PROJECTS_DIR = process.env.PROJECTS_DIR || '/opt/http-server-manager/projects';
+// Default the projects directory to a `projects/` folder next to this manager
+// install, so Rediscover and Import always target a path that exists wherever the
+// manager is checked out (override with the PROJECTS_DIR environment variable).
+const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(__dirname, 'projects');
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.MANAGER_API_TOKEN || null;
 
@@ -731,6 +734,216 @@ function stopProgram(programId) {
 }
 
 // Browse a directory and return discovered projects (without modifying config)
+// ---------------------------------------------------------------------------
+// Project import / discovery helpers
+// ---------------------------------------------------------------------------
+
+// Regenerate config.json from a projects directory, preserving per-program URL
+// options and the bundled programs. Shared by /api/rediscover and /api/import-repo.
+function runRediscovery(projectsDir) {
+  if (!projectsDir) {
+    throw new Error('No projects directory specified. Set PROJECTS_DIR or pass projectsDir.');
+  }
+  if (!fs.existsSync(projectsDir)) {
+    throw new Error(`Projects directory not found: ${projectsDir}`);
+  }
+
+  const existingConfig = fs.existsSync(CONFIG_FILE) ? loadConfig() : null;
+
+  // Backup existing config before we overwrite it.
+  if (fs.existsSync(CONFIG_FILE)) {
+    const backupFile = CONFIG_FILE + '.backup.' + Date.now();
+    fs.copyFileSync(CONFIG_FILE, backupFile);
+    console.log(`[manager] Backed up config to: ${backupFile}`);
+  }
+
+  const { discoverProjects, generateConfig } = require('./discover-projects');
+  const projects = discoverProjects(projectsDir);
+  const newConfig = ensureBundledPrograms(
+    preserveExistingProgramUrlOptions(generateConfig(projects), existingConfig)
+  );
+  validateConfig(newConfig);
+
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
+  console.log(`[manager] Regenerated config with ${projects.length} project(s)`);
+
+  // Clear cache so the next read reloads.
+  cachedConfig = null;
+  cachedConfigMtimeMs = null;
+
+  return projects;
+}
+
+// Derive a safe folder name from a git URL (or an explicit override).
+function deriveRepoFolderName(repoUrl, override) {
+  let name = (override || '').trim();
+  if (!name) {
+    // Strip query/fragment and trailing slashes, drop a ".git" suffix, then take
+    // the last path segment. Handles both URL and scp-like (git@host:owner/repo).
+    let u = String(repoUrl || '').trim().replace(/[#?].*$/, '').replace(/\/+$/, '');
+    u = u.replace(/\.git$/i, '');
+    name = u.split(/[/:]/).filter(Boolean).pop() || '';
+  }
+  // Sanitize to a safe directory name.
+  return name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+}
+
+// Basic allowlist validation so we never hand arbitrary/option-like strings to git.
+// Returns an error message string, or null when the URL looks acceptable.
+function validateGitUrl(repoUrl) {
+  const url = String(repoUrl || '').trim();
+  if (!url) return 'Repository URL is required.';
+  if (url.startsWith('-')) return 'Invalid repository URL.';
+  const ok =
+    /^https?:\/\/\S+$/i.test(url) ||
+    /^git:\/\/\S+$/i.test(url) ||
+    /^ssh:\/\/\S+$/i.test(url) ||
+    /^[a-z0-9._-]+@[a-z0-9._-]+:\S+$/i.test(url); // scp-like git@host:owner/repo
+  if (!ok) {
+    return 'Unsupported repository URL. Use https://, git://, ssh://, or git@host:owner/repo.';
+  }
+  return null;
+}
+
+// Clone (or, if the folder is already a git repo, fast-forward) a repository into
+// destPath. Uses spawn with an args array (never a shell string) to avoid command
+// injection, and enforces a timeout so a hung clone can't wedge the manager.
+function cloneOrUpdateRepo(repoUrl, destPath, branch) {
+  return new Promise((resolve, reject) => {
+    const exists = fs.existsSync(destPath);
+    const isGitRepo = exists && fs.existsSync(path.join(destPath, '.git'));
+
+    if (exists && !isGitRepo) {
+      return reject(new Error(
+        `A non-git folder already exists at ${destPath}. Remove it or choose a different name.`
+      ));
+    }
+
+    let args;
+    if (isGitRepo) {
+      args = ['-C', destPath, 'pull', '--ff-only'];
+    } else {
+      args = ['clone', '--depth', '1'];
+      if (branch) args.push('--branch', branch);
+      args.push('--', repoUrl, destPath);
+    }
+
+    const git = spawn('git', args, {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+    });
+
+    let out = '';
+    git.stdout.on('data', d => { out += d.toString(); });
+    git.stderr.on('data', d => { out += d.toString(); });
+
+    const timer = setTimeout(() => {
+      git.kill('SIGKILL');
+      reject(new Error('git operation timed out after 180s.'));
+    }, 180000);
+
+    git.on('error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`Failed to run git: ${err.message}. Is git installed?`));
+    });
+
+    git.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ updated: isGitRepo, output: out.trim() });
+      } else {
+        reject(new Error(`git exited with code ${code}: ${out.trim().slice(-500)}`));
+      }
+    });
+  });
+}
+
+// If a freshly cloned project has no Start.sh, scaffold a sensible one so the
+// manager can launch it. Detection mirrors discover-projects.js (Node vs Python
+// vs generic). The Python variant matches the bundled projects' venv-safe pattern.
+function scaffoldStartScript(projectPath) {
+  const startPath = path.join(projectPath, 'Start.sh');
+  if (fs.existsSync(startPath)) {
+    return { created: false };
+  }
+
+  const has = (f) => fs.existsSync(path.join(projectPath, f));
+  let body;
+  let kind;
+
+  if (has('package.json')) {
+    kind = 'node';
+    body = [
+      '#!/usr/bin/env bash',
+      '# Auto-generated by HTTP Server Manager on import. Edit as needed.',
+      'set -euo pipefail',
+      'cd "$(dirname "${BASH_SOURCE[0]}")"',
+      '',
+      'export HOST="${HOST:-0.0.0.0}"',
+      'export PORT="${PORT:-3000}"',
+      '',
+      '[ -d node_modules ] || npm install',
+      'npm start',
+      ''
+    ].join('\n');
+  } else if (has('requirements.txt') || has('app.py') || has('run.py') || has('main.py')) {
+    kind = 'python';
+    const entry = has('app.py') ? 'app.py'
+      : has('run.py') ? 'run.py'
+      : has('main.py') ? 'main.py'
+      : 'app.py';
+    body = [
+      '#!/usr/bin/env bash',
+      '# Auto-generated by HTTP Server Manager on import. Edit as needed.',
+      'set -euo pipefail',
+      'APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'cd "$APP_DIR"',
+      '',
+      'VENV_PY="$APP_DIR/.venv/bin/python"',
+      'if [[ ! -x "$VENV_PY" ]]; then',
+      '  SYS_PY="$(command -v python3 || true)"',
+      '  [[ -n "$SYS_PY" ]] || { echo "[ERROR] python3 not found"; exit 1; }',
+      '  echo "[SETUP] Creating virtualenv at .venv..."',
+      '  "$SYS_PY" -m venv "$APP_DIR/.venv"',
+      'fi',
+      '',
+      'if [[ -f requirements.txt ]]; then',
+      '  echo "[SETUP] Installing requirements..."',
+      '  "$VENV_PY" -m pip install --upgrade pip >/dev/null',
+      '  "$VENV_PY" -m pip install -r requirements.txt',
+      'fi',
+      '',
+      'export HOST="${HOST:-0.0.0.0}"',
+      'export PORT="${PORT:-8000}"',
+      '',
+      `echo "[RUN] Starting ${entry} (HOST=$HOST PORT=$PORT)"`,
+      `exec "$VENV_PY" "${entry}"`,
+      ''
+    ].join('\n');
+  } else {
+    kind = 'placeholder';
+    body = [
+      '#!/usr/bin/env bash',
+      '# Auto-generated placeholder — EDIT THIS before starting the program.',
+      '# The manager could not detect how to launch this project. Replace the',
+      '# command below with the one that starts your app, and set PORT to the',
+      '# port it listens on.',
+      'set -euo pipefail',
+      'cd "$(dirname "${BASH_SOURCE[0]}")"',
+      '',
+      'export HOST="${HOST:-0.0.0.0}"',
+      'export PORT="${PORT:-8080}"',
+      '',
+      'echo "[manager] Start.sh for this project is not configured yet." >&2',
+      'echo "[manager] Edit $(pwd)/Start.sh to launch your app." >&2',
+      'exit 1',
+      ''
+    ].join('\n');
+  }
+
+  fs.writeFileSync(startPath, body, { mode: 0o755 });
+  return { created: true, kind };
+}
+
 app.get('/api/browse-projects', (req, res) => {
   const dir = req.query.dir || PROJECTS_DIR;
 
@@ -785,45 +998,7 @@ app.post('/api/rediscover', requireApiToken, (req, res) => {
 
   try {
     const projectsDir = req.body.projectsDir || PROJECTS_DIR;
-
-    if (!projectsDir) {
-      return res.status(400).json({
-        success: false,
-        error: 'No projects directory specified. Set PROJECTS_DIR environment variable or provide projectsDir in request body.'
-      });
-    }
-
-    if (!fs.existsSync(projectsDir)) {
-      return res.status(404).json({
-        success: false,
-        error: `Projects directory not found: ${projectsDir}`
-      });
-    }
-
-    const existingConfig = fs.existsSync(CONFIG_FILE) ? loadConfig() : null;
-
-    // Backup existing config
-    if (fs.existsSync(CONFIG_FILE)) {
-      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
-      fs.copyFileSync(CONFIG_FILE, backupFile);
-      console.log(`[manager] Backed up config to: ${backupFile}`);
-    }
-
-    // Run discovery
-    const { discoverProjects, generateConfig } = require('./discover-projects');
-    const projects = discoverProjects(projectsDir);
-    const newConfig = ensureBundledVoskProgram(
-      preserveExistingProgramUrlOptions(generateConfig(projects), existingConfig)
-    );
-    validateConfig(newConfig);
-
-    // Save new config
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
-    console.log(`[manager] Regenerated config with ${projects.length} project(s)`);
-
-    // Clear cache to force reload
-    cachedConfig = null;
-    cachedConfigMtimeMs = null;
+    const projects = runRediscovery(projectsDir);
 
     res.json({
       success: true,
@@ -839,6 +1014,77 @@ app.post('/api/rediscover', requireApiToken, (req, res) => {
       success: false,
       error: err.message
     });
+  }
+});
+
+// Import a program from a git repository: clone it into the projects folder,
+// scaffold a Start.sh if the repo doesn't ship one, then rediscover so it shows
+// up in the manager. Cloning uses spawn(git, [...]) — never a shell string.
+app.post('/api/import-repo', requireApiToken, async (req, res) => {
+  try {
+    const { repoUrl, branch, name } = req.body || {};
+
+    const urlError = validateGitUrl(repoUrl);
+    if (urlError) {
+      return res.status(400).json({ success: false, error: urlError });
+    }
+
+    const folderName = deriveRepoFolderName(repoUrl, name);
+    if (!folderName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Could not determine a folder name from the URL. Provide a name explicitly.'
+      });
+    }
+
+    const cleanBranch = (branch || '').trim();
+    if (cleanBranch && !/^[A-Za-z0-9._\/-]+$/.test(cleanBranch)) {
+      return res.status(400).json({ success: false, error: 'Invalid branch name.' });
+    }
+
+    // Ensure the projects directory exists, then resolve the destination and
+    // guard against a name that would escape the projects folder.
+    fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+    const resolvedRoot = path.resolve(PROJECTS_DIR);
+    const resolvedDest = path.resolve(path.join(PROJECTS_DIR, folderName));
+    if (resolvedDest !== resolvedRoot && !resolvedDest.startsWith(resolvedRoot + path.sep)) {
+      return res.status(400).json({ success: false, error: 'Invalid destination path.' });
+    }
+
+    console.log(`[manager] Importing ${repoUrl} -> ${resolvedDest}`);
+    const cloneResult = await cloneOrUpdateRepo(String(repoUrl).trim(), resolvedDest, cleanBranch);
+
+    // Make sure the manager can actually launch it.
+    const scaffold = scaffoldStartScript(resolvedDest);
+
+    // Regenerate config so the new project appears in the UI.
+    const projects = runRediscovery(PROJECTS_DIR);
+    const imported = projects.find(p => path.resolve(p.path) === resolvedDest) || null;
+
+    const bits = [`${cloneResult.updated ? 'Updated' : 'Cloned'} ${folderName}`];
+    if (scaffold.created) {
+      bits.push(scaffold.kind === 'placeholder'
+        ? 'no launch command detected — edit the generated Start.sh before starting'
+        : `generated a ${scaffold.kind} Start.sh — review it before starting`);
+    }
+    if (!imported) {
+      bits.push('not yet runnable (no Start.sh detected)');
+    }
+
+    res.json({
+      success: true,
+      action: cloneResult.updated ? 'updated' : 'cloned',
+      folderName,
+      path: resolvedDest,
+      program: imported,
+      scaffolded: scaffold.created ? scaffold.kind : null,
+      message: bits.join(' — ')
+    });
+
+    setTimeout(() => broadcastStatus(), 500);
+  } catch (err) {
+    console.error('[manager] Import failed:', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1125,8 +1371,20 @@ async function startServer() {
   });
 }
 
-// Start the server
-startServer().catch(err => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+// Start the server only when run directly, so the module can be required for
+// testing without opening a listening socket.
+if (require.main === module) {
+  startServer().catch(err => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}
+
+// Exported for tests / external callers.
+module.exports = {
+  runRediscovery,
+  deriveRepoFolderName,
+  validateGitUrl,
+  cloneOrUpdateRepo,
+  scaffoldStartScript
+};

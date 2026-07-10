@@ -32,6 +32,9 @@
         <button class="btn btn-warning btn-sm" id="btnRestartManager" title="Restart the HTTP Server Manager process">
           <span>⟳</span> Restart Manager
         </button>
+        <button class="btn btn-info btn-sm" id="btnImportRepo" title="Clone a program from a git repository into your projects folder">
+          <span>📥</span> Import from Git
+        </button>
         <button class="btn btn-success btn-sm" id="btnAddProgram" title="Add a new program">
           <span>➕</span> Add Program
         </button>
@@ -206,6 +209,45 @@
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" id="btnCancel">Cancel</button>
             <button type="submit" class="btn btn-success" id="btnSave">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import from Git Modal -->
+  <div class="modal hidden" id="importModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Import Program from Git</h2>
+        <button class="modal-close" id="importModalClose">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="importForm">
+          <div class="form-group">
+            <label for="importRepoUrl">Repository URL <span class="required">*</span></label>
+            <input type="text" id="importRepoUrl" class="form-input" required
+              placeholder="https://github.com/user/repo.git">
+            <small>https://, git://, ssh://, or git@host:user/repo</small>
+          </div>
+
+          <div class="form-group">
+            <label for="importBranch">Branch (optional)</label>
+            <input type="text" id="importBranch" class="form-input" placeholder="main">
+            <small>Leave blank to clone the repository's default branch</small>
+          </div>
+
+          <div class="form-group">
+            <label for="importName">Folder name (optional)</label>
+            <input type="text" id="importName" class="form-input" placeholder="derived from repo URL">
+            <small>Folder it lands in under your projects directory. Blank = repo name.</small>
+          </div>
+
+          <div class="import-status hidden" id="importStatus"></div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" id="importCancel">Cancel</button>
+            <button type="submit" class="btn btn-success" id="importSubmit">Import</button>
           </div>
         </form>
       </div>

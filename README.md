@@ -108,12 +108,27 @@ node discover-projects.js /path/to/your/projects --output my-config.json
 
 **Web UI Rediscovery:**
 - Click the "🔍 Rediscover" button in the web interface
-- Enter the projects directory path when prompted (defaults to `/home/jupyter-tj/projects`)
+- Enter the projects directory path when prompted (defaults to the `projects/` folder next to this manager install, or whatever `PROJECTS_DIR` is set to)
 - Scans the specified directory and regenerates config.json
 - Automatically backs up existing config
 - Preserves existing program URL overrides/options when a rediscovered program matches the old ID
-- Keeps the bundled Vosk card available even when the scanned projects directory is separate from this manager repository
+- Keeps the bundled cards available even when the scanned projects directory is separate from this manager repository
 - All changes take effect immediately
+
+### Importing a Program from Git
+
+The fastest way to add a program from another repository:
+
+- Click the **"📥 Import from Git"** button in the web interface
+- Paste a repository URL (`https://`, `git://`, `ssh://`, or `git@host:user/repo`)
+- Optionally set a branch and/or the folder name it lands in
+
+The manager will:
+1. Clone the repository into your projects folder (`PROJECTS_DIR`, default `projects/` next to the manager)
+2. If the repo has no `Start.sh`, generate one — a venv-safe launcher for Python projects, `npm install && npm start` for Node projects, or an editable placeholder otherwise
+3. Rediscover projects so the new program appears immediately (existing config is backed up first)
+
+Re-importing the same repository fast-forwards it (`git pull --ff-only`) instead of failing. If a scaffolded `Start.sh` was generated, review it — and set the right `PORT`/env — before starting the program. Cloning runs `git` directly with argument arrays (never a shell string) and validates the URL, so pasted URLs can't inject shell commands.
 
 **What Gets Auto-Detected:**
 - ✅ All directories with `Start.sh` files
@@ -262,6 +277,7 @@ The manager provides a REST API:
 **Configuration:**
 - `GET /api/config` - Get current configuration
 - `POST /api/rediscover` - Rediscover projects and regenerate config (requires auth)
+- `POST /api/import-repo` - Clone a git repo into the projects folder, scaffold a `Start.sh` if needed, and rediscover (requires auth). Body: `{ "repoUrl": "...", "branch": "optional", "name": "optional-folder-name" }`
 
 **System:**
 - `GET /api/stats` - Get statistics

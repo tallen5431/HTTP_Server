@@ -677,6 +677,79 @@ async function rediscoverProjects() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Import a program from a git repository
+// ---------------------------------------------------------------------------
+const importModal = document.getElementById('importModal');
+
+function openImportModal() {
+  const form = document.getElementById('importForm');
+  if (form) form.reset();
+  const status = document.getElementById('importStatus');
+  if (status) {
+    status.classList.add('hidden');
+    status.textContent = '';
+  }
+  importModal.classList.remove('hidden');
+  const urlInput = document.getElementById('importRepoUrl');
+  if (urlInput) setTimeout(() => urlInput.focus(), 0);
+}
+
+function closeImportModal() {
+  importModal.classList.add('hidden');
+}
+
+async function importRepo(e) {
+  e.preventDefault();
+
+  const repoUrl = document.getElementById('importRepoUrl').value.trim();
+  const branch = document.getElementById('importBranch').value.trim();
+  const name = document.getElementById('importName').value.trim();
+  const status = document.getElementById('importStatus');
+  const submitBtn = document.getElementById('importSubmit');
+
+  if (!repoUrl) {
+    showToast('❌ Please enter a repository URL', 'error');
+    return;
+  }
+
+  // Cloning can take a while — reflect that in the UI and prevent double submits.
+  submitBtn.disabled = true;
+  const originalLabel = submitBtn.textContent;
+  submitBtn.textContent = 'Importing…';
+  if (status) {
+    status.classList.remove('hidden');
+    status.textContent = `Cloning ${repoUrl}… this can take a moment.`;
+  }
+  showToast('Importing repository…', 'info', 3000);
+
+  try {
+    const response = await fetch('/api/import-repo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repoUrl, branch, name })
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      showToast(`✅ ${data.message}`, 'success', 6000);
+      closeImportModal();
+      // Program list refreshes automatically via WebSocket broadcast.
+    } else {
+      if (status) status.textContent = `❌ ${data.error}`;
+      showToast(`❌ Import failed: ${data.error}`, 'error', 6000);
+    }
+  } catch (err) {
+    console.error('Failed to call /api/import-repo:', err);
+    if (status) status.textContent = '❌ Failed to reach the manager.';
+    showToast('Failed to import repository', 'error', 4000);
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = originalLabel;
+  }
+}
+
 async function restartManager() {
   if (!confirm('Restart HTTP Server Manager now?\n\nThis will stop the manager process; make sure a supervisor (systemd, another Server Manager, etc.) is configured to auto-restart it.')) {
     return;
@@ -1008,6 +1081,18 @@ document.addEventListener('DOMContentLoaded', () => {
     btnRestartManager.addEventListener('click', restartManager);
   }
 
+  // Import-from-git modal
+  const btnImportRepo = document.getElementById('btnImportRepo');
+  if (btnImportRepo) {
+    btnImportRepo.addEventListener('click', openImportModal);
+    document.getElementById('importModalClose').addEventListener('click', closeImportModal);
+    document.getElementById('importCancel').addEventListener('click', closeImportModal);
+    document.getElementById('importForm').addEventListener('submit', importRepo);
+    importModal.addEventListener('click', (e) => {
+      if (e.target === importModal) closeImportModal();
+    });
+  }
+
   // Setup modal event listeners
   document.getElementById('btnAddProgram').addEventListener('click', () => openModal());
   document.getElementById('modalClose').addEventListener('click', closeModal);
@@ -1054,7 +1139,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', (e) => {
     // Escape: Close modal or clear search
     if (e.key === 'Escape') {
-      if (!programModal.classList.contains('hidden')) {
+      if (importModal && !importModal.classList.contains('hidden')) {
+        closeImportModal();
+      } else if (!programModal.classList.contains('hidden')) {
         closeModal();
       } else if (searchQuery) {
         searchInput.value = '';
