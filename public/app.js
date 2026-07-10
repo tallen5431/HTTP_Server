@@ -46,7 +46,7 @@ function resolveProgramUrl(rawUrl, program = {}) {
         url.protocol = currentProtocol === 'https:' ? 'https:' : url.protocol;
         url.hostname = currentHostname;
 
-        if (program.omitPortInUrl || (program.id === 'vosk-transcriber' && url.protocol === 'https:')) {
+        if (program.omitPortInUrl) {
           url.port = '';
         }
 
@@ -632,8 +632,9 @@ async function restartAll() {
 }
 
 async function rediscoverProjects() {
-  // Prompt for projects directory
-  const defaultPath = defaultBrowseDir || '/opt/http-server-manager/projects';
+  // Prompt for projects directory (defaults to the manager's PROJECTS_DIR,
+  // fetched from /api/config into defaultBrowseDir).
+  const defaultPath = defaultBrowseDir || '';
   const projectsDir = prompt(
     'Enter the path to your projects directory:\n\n' +
     'This will scan the directory for projects with Start.sh files\n' +

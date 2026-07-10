@@ -41,66 +41,17 @@
       "comment": "No PORT env var and no URL, so no clickable link will appear"
     },
     {
-      "id": "codesmith",
-      "name": "CodeSmith",
-      "path": "/opt/http-server-manager/examples/codesmith",
+      "id": "example-tailscale-app",
+      "name": "Example Tailscale HTTPS App",
+      "path": "/path/to/your/app5",
       "env": {
         "HOST": "0.0.0.0",
-        "PORT": "8050",
-        "GITHUB_TOKEN": "",
-        "CODESMITH_LLM_BASE_URL": "http://100.98.112.1:11434/v1",
-        "CODESMITH_LLM_API_KEY": "not-needed",
-        "CODESMITH_LLM_MODEL": "qwen2.5-coder:7b"
+        "PORT": "8090"
       },
-      "comment": "AI-assisted code modification UI. Set GITHUB_TOKEN to a GitHub PAT (repo read scope) so Start.sh can clone the private CodeSmith repo. Connects to Ollama on desktop-glpggos via Tailscale (100.98.112.1:11434)."
-    },
-    {
-      "id": "vosk-transcriber",
-      "name": "Vosk Voice Transcriber",
-      "path": "/workspace/HTTP_Server/examples/vosk-transcriber",
-      "env": {
-        "HOST": "0.0.0.0",
-        "PORT": "8090",
-        "VOSK_MODEL_PATH": "/workspace/HTTP_Server/examples/vosk-transcriber/model"
-      },
-      "comment": "Bundled sample program card for transcribing WAV audio with a local Vosk model. URL auto-generates as an HTTPS Tailscale URL when a Tailscale hostname is available. Install examples/vosk-transcriber/requirements.txt and place a model at VOSK_MODEL_PATH.",
       "urlProtocol": "https",
       "preferTailscale": true,
-      "omitPortInUrl": true
-    },
-    {
-      "id": "qwen-system-assistant",
-      "name": "Qwen System Assistant",
-      "path": "/opt/http-server-manager/examples/qwen-system-assistant",
-      "env": {
-        "HOST": "0.0.0.0",
-        "PORT": "8091",
-        "OLLAMA_HOST": "http://100.98.112.1:11434",
-        "OLLAMA_MODEL": "qwen2.5-coder:0.5b",
-        "OLLAMA_NUM_CTX": "8192",
-        "OLLAMA_NUM_PREDICT": "512",
-        "MAX_MODEL_CONTEXT_CHARS": "24000",
-        "SSH_USER": "tj"
-      },
-      "comment": "Bundled local AI assistant. Connects to Ollama on desktop-glpggos via Tailscale (100.98.112.1:11434). Use the device selector in the UI to SSH into Tailscale devices for remote system/file scans."
-    },
-    {
-      "id": "inventory-ocr",
-      "name": "Inventory OCR",
-      "path": "/workspace/HTTP_Server/examples/inventory-ocr",
-      "env": {
-        "HOST": "0.0.0.0",
-        "PORT": "8001",
-        "URL_PREFIX": "",
-        "INVENTORY_OCR_BRANCH": "main",
-        "GITHUB_TOKEN": "",
-        "OLLAMA_HOST": "http://100.98.112.1:11434",
-        "OLLAMA_VISION_MODEL": "llama3.2-vision",
-        "SERPAPI_KEY": "",
-        "GOOGLE_VISION_API_KEY": "",
-        "WEB_DETECT_PROVIDER": "auto"
-      },
-      "comment": "Snap phone photos to organize, categorize, and count your stuff (location, quantity, notes, bins, optional OCR). 'Identify from photo' uses a local Ollama vision model (OLLAMA_HOST/OLLAMA_VISION_MODEL); pull one first, e.g. 'ollama pull llama3.2-vision'. For automatic web identification (real product name + price), set SERPAPI_KEY (free tier, no card) or GOOGLE_VISION_API_KEY (free tier needs billing); leave empty to stay fully local. Start.sh clones tallen5431/InventoryOCR and serves it at http://<detected-ip>:8001. Set GITHUB_TOKEN to a GitHub PAT (repo read scope) if the repo is private."
+      "omitPortInUrl": true,
+      "comment": "Generates an HTTPS Tailscale URL such as https://your-machine.your-tailnet.ts.net when a Tailscale hostname is configured/detectable. Set tailscaleHostname at the config root or TAILSCALE_HOSTNAME in the environment if the tailscale CLI is unavailable."
     }
   ]
 }

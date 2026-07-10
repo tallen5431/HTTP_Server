@@ -13,8 +13,7 @@ A simple, self-configuring HTTP server manager that automatically detects your n
 - **🎨 Clean Web UI**: Modern, responsive interface that works on desktop and mobile
 - **🌐 Multi-program Support**: Manage multiple applications from a single interface
 - **🧠 Framework Detection**: Intelligently detects Flask, Django, FastAPI, Node.js, Streamlit and configures accordingly
-- **🎙️ Bundled Vosk Card**: Includes a ready-to-start sample voice transcription card powered by a local Vosk model
-- **📦 Bundled Inventory OCR Card**: Snap phone photos to organize, categorize, and count your stuff — pulls & runs `tallen5431/InventoryOCR`
+- **📥 Import from Git**: Clone any repository straight into your projects folder from the web UI
 
 ## Prerequisites
 
@@ -39,7 +38,7 @@ You have two options:
 Let the manager automatically find all your projects:
 
 ```bash
-# The manager defaults to /home/jupyter-tj/projects
+# The manager defaults to the `projects/` folder next to this install
 # Just run:
 npm start
 
@@ -52,7 +51,7 @@ The manager will:
 - Auto-generate `config.json` with intelligent defaults
 - Detect framework types and PORT configurations
 - Set up environment variables automatically
-- Default to `/home/jupyter-tj/projects` if not specified
+- Default to the `projects/` folder next to this install if not specified
 
 #### Option B: Manual Configuration
 
@@ -112,7 +111,6 @@ node discover-projects.js /path/to/your/projects --output my-config.json
 - Scans the specified directory and regenerates config.json
 - Automatically backs up existing config
 - Preserves existing program URL overrides/options when a rediscovered program matches the old ID
-- Keeps the bundled cards available even when the scanned projects directory is separate from this manager repository
 - All changes take effect immediately
 
 ### Importing a Program from Git
@@ -211,52 +209,18 @@ export PORT=8081
 python app.py
 ```
 
-### Bundled Vosk Voice Transcriber
+### Adding Your Own Programs
 
-The repository includes a sample program at `examples/vosk-transcriber` that is added as a **Vosk Voice Transcriber** card when the manager starts without an existing `config.json`. You can also copy the matching entry from `config.example.json` into your own config.
+The manager is driven entirely by the `projects/` folder. To add a program:
 
-Before starting the card:
+- **Import from Git** (easiest): use the **"📥 Import from Git"** button in the web
+  UI to clone a repository straight into `projects/` (see above).
+- **Drop it in**: copy or clone your project into `projects/<name>/`, make sure it
+  has an executable `Start.sh` that sets `PORT`, then click **🔍 Rediscover**.
 
-1. Install the Python dependency:
-   ```bash
-   python3 -m pip install -r examples/vosk-transcriber/requirements.txt
-   ```
-2. Download and unpack a Vosk speech model into `examples/vosk-transcriber/model`, or set `VOSK_MODEL_PATH` to another unpacked model directory.
-3. Start the card and open the generated HTTPS Tailscale URL to upload a mono PCM WAV file for transcription.
-
-The bundled app defaults to `HOST=0.0.0.0` and `PORT=8090`. Its manager card uses `urlProtocol: "https"`, `preferTailscale: true`, and `omitPortInUrl: true`, so it displays a Tailscale Serve-style URL such as `https://your-machine.your-tailnet.ts.net` when a Tailscale hostname is configured or detectable. Set `tailscaleHostname` in `config.json` or `TAILSCALE_HOSTNAME` in the manager environment if the `tailscale` CLI is unavailable.
-
-### Bundled Inventory OCR
-
-The repository includes a card at `examples/inventory-ocr` that turns photos you
-take on your phone into an organized, searchable inventory — track **what** each
-item is, **where** it lives, **how many** you have, and attach photos. When the
-card starts, its `Start.sh` clones (or updates) the app from
-[`tallen5431/InventoryOCR`](https://github.com/tallen5431/InventoryOCR), creates
-a Python virtual environment, installs the requirements, and serves the Dash web
-app at the site root so the manager's **Open** link goes straight into it.
-
-The card starts on `HOST=0.0.0.0` and `PORT=8001` and generates a URL like
-`http://<detected-ip>:8001`. Useful env vars (edit them from the card's **Edit**
-dialog):
-
-- `URL_PREFIX` — leave empty to serve at the root (default). Set to `/inventory`
-  only if you place it behind a reverse proxy on that path.
-- `INVENTORY_OCR_BRANCH` — which branch of the InventoryOCR repo to run
-  (default `main`).
-- `GITHUB_TOKEN` — a GitHub PAT with repo read scope, needed only if the
-  repository is private.
-- `OLLAMA_HOST` / `OLLAMA_VISION_MODEL` — the app's **Identify from photo**
-  button asks a local Ollama vision model what an item is (plus specs, estimated
-  value, dimensions). Defaults to the desktop Ollama via Tailscale
-  (`http://100.98.112.1:11434`) and `llama3.2-vision`; pull a vision model first
-  (`ollama pull llama3.2-vision`).
-
-Your inventory data and photos live inside the cloned `examples/inventory-ocr/src`
-folder and are ignored by git, so they persist across restarts and updates.
-Optional OCR text extraction needs the Tesseract binary
-(`sudo apt-get install -y tesseract-ocr`); everything else works without it. See
-`examples/inventory-ocr/README.md` for details.
+Either way the new program appears as a card with an auto-generated URL. Nothing
+is bundled into this repository — your projects and their data live under
+`projects/`, which is ignored by git so it persists across manager updates.
 
 ## API Endpoints
 

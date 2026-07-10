@@ -16,100 +16,6 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || path.resolve(__dirname, 'projec
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.MANAGER_API_TOKEN || null;
 
-function getBundledVoskTranscriberProgram() {
-  const programPath = path.resolve(__dirname, 'examples', 'vosk-transcriber');
-  return {
-    id: 'vosk-transcriber',
-    name: 'Vosk Voice Transcriber',
-    path: programPath,
-    env: {
-      HOST: '0.0.0.0',
-      PORT: '8090',
-      VOSK_MODEL_PATH: path.join(programPath, 'model')
-    },
-    urlProtocol: 'https',
-    preferTailscale: true,
-    omitPortInUrl: true,
-    comment: 'Bundled sample card for local voice transcription with a Vosk model. Install requirements and place a model at VOSK_MODEL_PATH before starting.'
-  };
-}
-
-function getBundledCodeSmithProgram() {
-  const programPath = path.resolve(__dirname, 'examples', 'codesmith');
-  return {
-    id: 'codesmith',
-    name: 'CodeSmith',
-    path: programPath,
-    env: {
-      HOST: '0.0.0.0',
-      PORT: '8050',
-      GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
-      CODESMITH_LLM_BASE_URL: process.env.CODESMITH_LLM_BASE_URL || 'http://100.98.112.1:11434/v1',
-      CODESMITH_LLM_API_KEY: process.env.CODESMITH_LLM_API_KEY || 'not-needed',
-      CODESMITH_LLM_MODEL: process.env.CODESMITH_LLM_MODEL || 'qwen2.5-coder:7b'
-    },
-    comment: 'AI-assisted code modification UI. Set GITHUB_TOKEN to a GitHub PAT with repo read access so Start.sh can clone the private CodeSmith repo. Set CODESMITH_LLM_BASE_URL to your Ollama endpoint (default: desktop-glpggos via Tailscale).'
-  };
-}
-
-function getBundledQwenSystemAssistantProgram() {
-  const programPath = path.resolve(__dirname, 'examples', 'qwen-system-assistant');
-  return {
-    id: 'qwen-system-assistant',
-    name: 'Qwen System Assistant',
-    path: programPath,
-    env: {
-      HOST: '0.0.0.0',
-      PORT: '8091',
-      OLLAMA_HOST: 'http://100.98.112.1:11434',
-      OLLAMA_MODEL: 'qwen2.5-coder:0.5b',
-      OLLAMA_NUM_CTX: '8192',
-      OLLAMA_NUM_PREDICT: '512',
-      MAX_MODEL_CONTEXT_CHARS: '24000',
-      SSH_USER: 'tj'
-    },
-    comment: 'Bundled local AI assistant card. Connects to Ollama on desktop-glpggos via Tailscale (100.98.112.1:11434). Use the device selector in the UI to SSH into pi5, Jetson, or NucBox for remote system/file scans.'
-  };
-}
-
-function getBundledInventoryOcrProgram() {
-  const programPath = path.resolve(__dirname, 'examples', 'inventory-ocr');
-  return {
-    id: 'inventory-ocr',
-    name: 'Inventory OCR',
-    path: programPath,
-    env: {
-      HOST: '0.0.0.0',
-      PORT: '8001',
-      URL_PREFIX: '',
-      INVENTORY_OCR_BRANCH: process.env.INVENTORY_OCR_BRANCH || 'main',
-      GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
-      OLLAMA_HOST: process.env.OLLAMA_HOST || 'http://100.98.112.1:11434',
-      OLLAMA_VISION_MODEL: process.env.OLLAMA_VISION_MODEL || 'llama3.2-vision'
-    },
-    comment: 'Snap phone photos to organize, categorize, and count your stuff (location, quantity, notes, OCR). "Identify from photo" uses a local Ollama vision model (OLLAMA_HOST/OLLAMA_VISION_MODEL) — pull one first, e.g. `ollama pull llama3.2-vision`. Start.sh clones tallen5431/InventoryOCR and runs it at the site root. Set GITHUB_TOKEN if the repo is private.'
-  };
-}
-
-function ensureBundledPrograms(config) {
-  if (!config.programs.some(program => isVoskProgram(program))) {
-    config.programs.push(getBundledVoskTranscriberProgram());
-  }
-  if (!config.programs.some(program => isCodeSmithProgram(program))) {
-    config.programs.push(getBundledCodeSmithProgram());
-  }
-  if (!config.programs.some(program => isQwenSystemAssistantProgram(program))) {
-    config.programs.push(getBundledQwenSystemAssistantProgram());
-  }
-  if (!config.programs.some(program => isInventoryOcrProgram(program))) {
-    config.programs.push(getBundledInventoryOcrProgram());
-  }
-  return config;
-}
-
-// Kept for backwards compatibility with any external callers
-const ensureBundledVoskProgram = ensureBundledPrograms;
-
 function mergeExistingProgramUrlOptions(newProgram, existingProgram) {
   if (!existingProgram) return;
 
@@ -136,11 +42,7 @@ function preserveExistingProgramUrlOptions(newConfig, existingConfig) {
 
   for (const newProgram of newConfig.programs) {
     const existingProgram = existingConfig.programs.find(program =>
-      program.id === newProgram.id ||
-      (isVoskProgram(program) && isVoskProgram(newProgram)) ||
-      (isCodeSmithProgram(program) && isCodeSmithProgram(newProgram)) ||
-      (isQwenSystemAssistantProgram(program) && isQwenSystemAssistantProgram(newProgram)) ||
-      (isInventoryOcrProgram(program) && isInventoryOcrProgram(newProgram))
+      program.id === newProgram.id
     );
     mergeExistingProgramUrlOptions(newProgram, existingProgram);
   }
@@ -170,7 +72,7 @@ function loadConfig() {
         try {
           const { discoverProjects, generateConfig } = require('./discover-projects');
           const projects = discoverProjects(PROJECTS_DIR);
-          const autoConfig = ensureBundledVoskProgram(generateConfig(projects));
+          const autoConfig = generateConfig(projects);
 
           // Save the auto-generated config
           fs.writeFileSync(CONFIG_FILE, JSON.stringify(autoConfig, null, 2), 'utf8');
@@ -185,10 +87,11 @@ function loadConfig() {
         }
       }
 
-      // Fallback default config so the UI can still start.
+      // Fallback empty config so the UI can still start. Add programs by
+      // dropping them into PROJECTS_DIR and hitting Rediscover, or Import from Git.
       const defaultConfig = {
         hostname: 'auto',
-        programs: [getBundledVoskTranscriberProgram(), getBundledCodeSmithProgram(), getBundledQwenSystemAssistantProgram(), getBundledInventoryOcrProgram()]
+        programs: []
       };
       cachedConfig = defaultConfig;
       cachedConfigMtimeMs = null;
@@ -198,7 +101,7 @@ function loadConfig() {
     const stats = fs.statSync(CONFIG_FILE);
     if (!cachedConfig || stats.mtimeMs !== cachedConfigMtimeMs) {
       const data = fs.readFileSync(CONFIG_FILE, 'utf8');
-      const config = ensureBundledPrograms(JSON.parse(data));
+      const config = JSON.parse(data);
       validateConfig(config);
       cachedConfig = config;
       cachedConfigMtimeMs = stats.mtimeMs;
@@ -211,49 +114,38 @@ function loadConfig() {
   }
 }
 
+// Keep at most this many config.json.backup.* files so they don't pile up.
+const MAX_CONFIG_BACKUPS = 5;
 
-function isVoskProgram(program) {
-  return program && (
-    program.id === 'vosk-transcriber' ||
-    /vosk/i.test(program.name || '') ||
-    /vosk-transcriber/.test(program.path || '')
-  );
-}
-
-function isCodeSmithProgram(program) {
-  return program && (
-    program.id === 'codesmith' ||
-    /^codesmith$/i.test(program.name || '') ||
-    /[/\\]codesmith([/\\]|$)/.test(program.path || '')
-  );
-}
-
-function isQwenSystemAssistantProgram(program) {
-  return program && (
-    program.id === 'qwen-system-assistant' ||
-    /qwen system assistant/i.test(program.name || '') ||
-    /qwen-system-assistant/.test(program.path || '')
-  );
-}
-
-function isInventoryOcrProgram(program) {
-  return program && (
-    program.id === 'inventory-ocr' ||
-    /^inventory\s*ocr$/i.test(program.name || '') ||
-    /inventory-ocr/.test(program.path || '')
-  );
-}
-
-function applyDefaultProgramUrlOptions(program) {
-  // Keep existing user-provided values, but make legacy Vosk entries generate
-  // the intended Tailscale HTTPS card URL even when config.json predates these
-  // options and was not copied from config.example.json.
-  if (isVoskProgram(program) && !program.url) {
-    if (program.urlProtocol === undefined) program.urlProtocol = 'https';
-    if (program.preferTailscale === undefined) program.preferTailscale = true;
-    if (program.omitPortInUrl === undefined) program.omitPortInUrl = true;
+// Back up the current config (if any) to config.json.backup.<timestamp>, then
+// prune the oldest backups beyond MAX_CONFIG_BACKUPS. Returns the backup path,
+// or null when there was nothing to back up.
+function backupConfigFile() {
+  if (!fs.existsSync(CONFIG_FILE)) {
+    return null;
   }
+
+  const backupFile = `${CONFIG_FILE}.backup.${Date.now()}`;
+  fs.copyFileSync(CONFIG_FILE, backupFile);
+
+  // Prune old backups, keeping the most recent MAX_CONFIG_BACKUPS.
+  try {
+    const dir = path.dirname(CONFIG_FILE);
+    const base = path.basename(CONFIG_FILE) + '.backup.';
+    const backups = fs.readdirSync(dir)
+      .filter(name => name.startsWith(base))
+      .sort(); // timestamp suffix sorts chronologically
+    const excess = backups.length - MAX_CONFIG_BACKUPS;
+    for (let i = 0; i < excess; i++) {
+      fs.unlinkSync(path.join(dir, backups[i]));
+    }
+  } catch (err) {
+    console.warn(`[manager] Could not prune old config backups: ${err.message}`);
+  }
+
+  return backupFile;
 }
+
 
 // Validate configuration
 function validateConfig(config) {
@@ -291,8 +183,6 @@ function validateConfig(config) {
       console.warn(`Program "${program.id}" has a non-string url; this will be ignored.`);
       delete program.url;
     }
-
-    applyDefaultProgramUrlOptions(program);
   });
 
   return true;
@@ -739,7 +629,7 @@ function stopProgram(programId) {
 // ---------------------------------------------------------------------------
 
 // Regenerate config.json from a projects directory, preserving per-program URL
-// options and the bundled programs. Shared by /api/rediscover and /api/import-repo.
+// overrides for programs matched by ID. Shared by /api/rediscover and /api/import-repo.
 function runRediscovery(projectsDir) {
   if (!projectsDir) {
     throw new Error('No projects directory specified. Set PROJECTS_DIR or pass projectsDir.');
@@ -751,17 +641,14 @@ function runRediscovery(projectsDir) {
   const existingConfig = fs.existsSync(CONFIG_FILE) ? loadConfig() : null;
 
   // Backup existing config before we overwrite it.
-  if (fs.existsSync(CONFIG_FILE)) {
-    const backupFile = CONFIG_FILE + '.backup.' + Date.now();
-    fs.copyFileSync(CONFIG_FILE, backupFile);
+  const backupFile = backupConfigFile();
+  if (backupFile) {
     console.log(`[manager] Backed up config to: ${backupFile}`);
   }
 
   const { discoverProjects, generateConfig } = require('./discover-projects');
   const projects = discoverProjects(projectsDir);
-  const newConfig = ensureBundledPrograms(
-    preserveExistingProgramUrlOptions(generateConfig(projects), existingConfig)
-  );
+  const newConfig = preserveExistingProgramUrlOptions(generateConfig(projects), existingConfig);
   validateConfig(newConfig);
 
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
@@ -859,7 +746,7 @@ function cloneOrUpdateRepo(repoUrl, destPath, branch) {
 
 // If a freshly cloned project has no Start.sh, scaffold a sensible one so the
 // manager can launch it. Detection mirrors discover-projects.js (Node vs Python
-// vs generic). The Python variant matches the bundled projects' venv-safe pattern.
+// vs generic). The Python variant uses a venv-safe launcher pattern.
 function scaffoldStartScript(projectPath) {
   const startPath = path.join(projectPath, 'Start.sh');
   if (fs.existsSync(startPath)) {
@@ -1133,10 +1020,7 @@ app.put('/api/programs/:id', requireApiToken, (req, res) => {
     validateConfig(config);
 
     // Backup existing config
-    if (fs.existsSync(CONFIG_FILE)) {
-      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
-      fs.copyFileSync(CONFIG_FILE, backupFile);
-    }
+    backupConfigFile();
 
     // Save updated config
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
@@ -1198,10 +1082,7 @@ app.post('/api/programs', requireApiToken, (req, res) => {
     validateConfig(config);
 
     // Backup existing config
-    if (fs.existsSync(CONFIG_FILE)) {
-      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
-      fs.copyFileSync(CONFIG_FILE, backupFile);
-    }
+    backupConfigFile();
 
     // Save updated config
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
@@ -1255,10 +1136,7 @@ app.delete('/api/programs/:id', requireApiToken, (req, res) => {
     config.programs.splice(programIndex, 1);
 
     // Backup existing config
-    if (fs.existsSync(CONFIG_FILE)) {
-      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
-      fs.copyFileSync(CONFIG_FILE, backupFile);
-    }
+    backupConfigFile();
 
     // Save updated config
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
