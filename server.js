@@ -12,12 +12,12 @@ const CONFIG_FILE = process.env.CONFIG_FILE || './config.json';
 // Default the projects directory to a `projects/` folder next to this manager
 // install, so Rediscover and Import always target a path that exists wherever the
 // manager is checked out (override with the PROJECTS_DIR environment variable).
-const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(__dirname, 'projects');
+const PROJECTS_DIR = process.env.PROJECTS_DIR || path.resolve(__dirname, 'projects');
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.MANAGER_API_TOKEN || null;
 
 function getBundledVoskTranscriberProgram() {
-  const programPath = path.join(__dirname, 'examples', 'vosk-transcriber');
+  const programPath = path.resolve(__dirname, 'examples', 'vosk-transcriber');
   return {
     id: 'vosk-transcriber',
     name: 'Vosk Voice Transcriber',
@@ -35,7 +35,7 @@ function getBundledVoskTranscriberProgram() {
 }
 
 function getBundledCodeSmithProgram() {
-  const programPath = path.join(__dirname, 'examples', 'codesmith');
+  const programPath = path.resolve(__dirname, 'examples', 'codesmith');
   return {
     id: 'codesmith',
     name: 'CodeSmith',
@@ -53,7 +53,7 @@ function getBundledCodeSmithProgram() {
 }
 
 function getBundledQwenSystemAssistantProgram() {
-  const programPath = path.join(__dirname, 'examples', 'qwen-system-assistant');
+  const programPath = path.resolve(__dirname, 'examples', 'qwen-system-assistant');
   return {
     id: 'qwen-system-assistant',
     name: 'Qwen System Assistant',
@@ -73,7 +73,7 @@ function getBundledQwenSystemAssistantProgram() {
 }
 
 function getBundledInventoryOcrProgram() {
-  const programPath = path.join(__dirname, 'examples', 'inventory-ocr');
+  const programPath = path.resolve(__dirname, 'examples', 'inventory-ocr');
   return {
     id: 'inventory-ocr',
     name: 'Inventory OCR',
