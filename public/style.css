@@ -355,10 +355,52 @@ main {
   background: #00acc1;
 }
 
+/* Multiple reachable addresses (Local, Tailscale, …) stack vertically, each
+   with a small colored tag so it's obvious which network the link is for. */
+.program-urls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.program-url-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.url-tag {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 10px;
+  color: #fff;
+  background: #90a4ae;
+  line-height: 1.4;
+}
+
+.url-tag-local {
+  background: #4caf50;
+}
+
+.url-tag-tailscale {
+  background: #6d5bd0;
+}
+
+.url-tag-configured {
+  background: #ff9800;
+}
+
 .program-url {
   color: #2196f3;
   text-decoration: none;
   transition: color 0.2s;
+  word-break: break-all;
 }
 
 .program-url:hover {

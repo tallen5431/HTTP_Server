@@ -269,6 +269,68 @@ function getPrimaryIpAddress() {
   return 'localhost';
 }
 
+// Tailscale hands out addresses in the 100.64.0.0/10 CGNAT range (second octet
+// 64–127). Used to tell a Tailscale address apart from a normal LAN address.
+function isTailscaleIpv4(address) {
+  return /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(String(address || ''));
+}
+
+// The machine's Tailscale IPv4 (e.g. 100.92.90.118), or null if Tailscale is
+// not up. Reads the tailscale0 interface first, then falls back to scanning for
+// any CGNAT-range address.
+function getTailscaleIpAddress() {
+  const { networkInterfaces } = require('os');
+  const nets = networkInterfaces();
+
+  if (nets['tailscale0']) {
+    for (const net of nets['tailscale0']) {
+      if (net.family === 'IPv4' && !net.internal) {
+        return net.address;
+      }
+    }
+  }
+
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal && isTailscaleIpv4(net.address)) {
+        return net.address;
+      }
+    }
+  }
+
+  return null;
+}
+
+// The machine's primary LAN IPv4 (e.g. 192.168.1.247), excluding Tailscale.
+// This is the address other devices on the same home/office network use.
+function getLanIpAddress() {
+  const { networkInterfaces } = require('os');
+  const nets = networkInterfaces();
+
+  const preferredInterfaces = ['eth0', 'en0', 'wlan0', 'wlp1s0', 'enp3s0'];
+
+  for (const ifaceName of preferredInterfaces) {
+    if (nets[ifaceName]) {
+      for (const net of nets[ifaceName]) {
+        if (net.family === 'IPv4' && !net.internal && !isTailscaleIpv4(net.address)) {
+          return net.address;
+        }
+      }
+    }
+  }
+
+  for (const name of Object.keys(nets)) {
+    if (name === 'tailscale0') continue;
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal && !isTailscaleIpv4(net.address)) {
+        return net.address;
+      }
+    }
+  }
+
+  return null;
+}
+
 // Program management
 function getProgramConfig(programId, config) {
   const program = config.programs.find(p => p.id === programId);
@@ -308,6 +370,7 @@ function getProgramStatus(programId, config, urlContext = null) {
     name: program.name,
     status: isRunning ? 'running' : 'stopped',
     url: generateProgramUrl(program, config, proc && proc.actualPort, urlContext),
+    urls: generateProgramUrls(program, config, proc && proc.actualPort),
     pid: isRunning ? proc.pid : null,
     uptime: isRunning && proc.spawnDate ? Date.now() - proc.spawnDate : 0
   };
@@ -355,6 +418,49 @@ function generateProgramUrl(program, config, runtimePort = null, urlContext = nu
   }
 
   return null;
+}
+
+// Build the full set of addresses a program can be reached at — typically a
+// Local (LAN) URL and a Tailscale URL — so the UI can show both instead of
+// guessing one. Returns an array of { label, url, kind }. An explicit
+// program.url override collapses this to a single entry.
+function generateProgramUrls(program, config, runtimePort = null) {
+  if (program.url) {
+    return [{ label: 'URL', url: program.url, kind: 'custom' }];
+  }
+
+  const port = runtimePort || (program.env && (program.env.PORT || program.env.port));
+  if (!port) return [];
+
+  const protocol = program.urlProtocol || (config && config.urlProtocol) || 'http';
+  const shouldOmitPort = Boolean(program.omitPortInUrl || (config && config.omitPortInUrl));
+  const portSegment = shouldOmitPort ? '' : `:${port}`;
+
+  const urls = [];
+  const seen = new Set();
+  const add = (label, kind, host) => {
+    const clean = String(host || '').replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    if (!clean || isLoopbackHostname(clean)) return;
+    const url = `${protocol}://${clean}${portSegment}`;
+    if (seen.has(url)) return;
+    seen.add(url);
+    urls.push({ label, url, kind });
+  };
+
+  // A configured, non-"auto" hostname (per-program or global) is the operator's
+  // explicit choice — list it first.
+  const configuredHostname = program.hostname || program.host || (config && config.hostname);
+  if (configuredHostname && configuredHostname !== 'auto') {
+    add('Custom', 'configured', configuredHostname);
+  }
+
+  // Local LAN address — what other devices on the same Wi-Fi/Ethernet use.
+  add('Local', 'local', getLanIpAddress());
+
+  // Remote access over Tailscale — prefer the MagicDNS name, else the 100.x IP.
+  add('Tailscale', 'tailscale', getTailscaleHostname(config) || getTailscaleIpAddress());
+
+  return urls;
 }
 
 function getAllProgramsStatus(config, urlContext = null) {

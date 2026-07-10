@@ -80,6 +80,21 @@ function resolveProgramUrl(rawUrl, program = {}) {
   return `${base}/${path}`;
 }
 
+// Choose which of a program's addresses the Open button should launch, based on
+// where the manager is being viewed from: over Tailscale -> the Tailscale URL,
+// on the LAN -> the Local URL. Falls back to the legacy single `url`.
+function pickBestUrl(program = {}) {
+  const list = Array.isArray(program.urls) ? program.urls : [];
+  if (list.length) {
+    const host = (window.location && window.location.hostname) || '';
+    const onTailscale = isTailscaleHostname(host) || host.startsWith('100.');
+    const prefer = onTailscale ? 'tailscale' : 'local';
+    const match = list.find(u => u.kind === prefer);
+    return (match || list[0]).url;
+  }
+  return resolveProgramUrl(program.url, program);
+}
+
 // DOM elements
 const programsGrid = document.getElementById('programsGrid');
 const emptyState = document.getElementById('emptyState');
@@ -316,7 +331,7 @@ function createProgramCard(program) {
   // Add click handler for Open button
   btnOpen.addEventListener('click', () => {
     const currentProgram = currentPrograms.find(p => p.id === program.id) || program;
-    const targetUrl = resolveProgramUrl(currentProgram.url, currentProgram);
+    const targetUrl = pickBestUrl(currentProgram);
     if (targetUrl) {
       window.open(targetUrl, '_blank');
     }
@@ -403,15 +418,47 @@ function updateProgramCard(card, program) {
     uptimeRow.classList.add('hidden');
   }
 
-  // Handle URL display
+  // Handle URL display — show every address the program is reachable at
+  // (Local LAN, Tailscale, …) so you can pick the one that works from where you
+  // are, instead of guessing a single URL. Falls back to the single resolved
+  // URL for older payloads that don't include the `urls` array.
   const urlRow = card.querySelector('.program-url-row');
-  const urlLink = card.querySelector('.program-url');
+  const urlContainer = card.querySelector('.program-urls');
+  const urlLabel = urlRow ? urlRow.querySelector('.label') : null;
   const btnOpen = card.querySelector('.btn-open');
 
-  if (resolvedUrl) {
+  const urlList = Array.isArray(program.urls) && program.urls.length
+    ? program.urls
+    : (resolvedUrl ? [{ label: '', url: resolvedUrl, kind: 'custom' }] : []);
+
+  urlContainer.innerHTML = '';
+
+  if (urlList.length) {
     urlRow.classList.remove('hidden');
-    urlLink.href = resolvedUrl;
-    urlLink.textContent = resolvedUrl;
+    if (urlLabel) urlLabel.textContent = urlList.length > 1 ? 'URLs:' : 'URL:';
+
+    urlList.forEach(entry => {
+      const item = document.createElement('span');
+      item.className = 'program-url-item';
+
+      if (entry.label) {
+        const tag = document.createElement('span');
+        tag.className = `url-tag url-tag-${entry.kind || 'default'}`;
+        tag.textContent = entry.label;
+        item.appendChild(tag);
+      }
+
+      const link = document.createElement('a');
+      link.href = entry.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.className = 'program-url';
+      link.textContent = entry.url;
+      item.appendChild(link);
+
+      urlContainer.appendChild(item);
+    });
+
     btnOpen.classList.remove('hidden');
   } else {
     urlRow.classList.add('hidden');
