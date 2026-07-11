@@ -244,29 +244,18 @@ function getPrimaryIpAddress() {
   const { networkInterfaces } = require('os');
   const nets = networkInterfaces();
 
-  // Prioritize Tailscale, then common LAN interfaces
-  const preferredInterfaces = ['tailscale0', 'eth0', 'en0', 'wlan0'];
-
-  for (const ifaceName of preferredInterfaces) {
-    if (nets[ifaceName]) {
-      for (const net of nets[ifaceName]) {
-        if (net.family === 'IPv4' && !net.internal) {
-          return net.address;
-        }
-      }
-    }
-  }
-
-  // Fallback: iterate through all interfaces
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
+  // Tailscale first (its address is reachable from anywhere the tailnet spans).
+  if (nets['tailscale0']) {
+    for (const net of nets['tailscale0']) {
       if (net.family === 'IPv4' && !net.internal) {
         return net.address;
       }
     }
   }
 
-  return 'localhost';
+  // Otherwise the best LAN address — wired preferred over Wi-Fi (see
+  // getLanIpAddress) — falling back to localhost if nothing qualifies.
+  return getLanIpAddress() || 'localhost';
 }
 
 // Tailscale hands out addresses in the 100.64.0.0/10 CGNAT range (second octet
@@ -301,34 +290,46 @@ function getTailscaleIpAddress() {
   return null;
 }
 
-// The machine's primary LAN IPv4 (e.g. 192.168.1.247), excluding Tailscale.
-// This is the address other devices on the same home/office network use.
+// Classify an interface name so we can prefer the address other LAN devices can
+// actually reach us on. Wired Ethernet (en*/eth*) beats Wi-Fi (wl*), and both
+// beat virtual bridges (docker/veth/virbr/tun…). This matters when a machine is
+// on Wi-Fi AND Ethernet at once: some routers isolate Wi-Fi clients from each
+// other, so the wired address is the reachable one and must win.
+function isVirtualInterface(name) {
+  return /^(docker|br-|veth|virbr|vmnet|vboxnet|zt|utun|llw|awdl|tun|tap)/i.test(name);
+}
+
+function rankLanInterface(name) {
+  if (/^(en|eth)/i.test(name)) return 3;   // wired ethernet (eth0, en0, enp3s0, eno1…)
+  if (/^wl/i.test(name)) return 2;          // wireless (wlan0, wlp1s0…)
+  if (isVirtualInterface(name)) return 0;   // docker/vm/tunnel bridges — last resort
+  return 1;                                 // anything else
+}
+
+// The machine's primary LAN IPv4 (e.g. 192.168.1.199), excluding Tailscale.
+// This is the address other devices on the same home/office network use. When
+// several interfaces qualify (e.g. Wi-Fi + Ethernet), the highest-ranked one
+// wins so we advertise the wired, reachable address rather than the first found.
 function getLanIpAddress() {
   const { networkInterfaces } = require('os');
   const nets = networkInterfaces();
 
-  const preferredInterfaces = ['eth0', 'en0', 'wlan0', 'wlp1s0', 'enp3s0'];
-
-  for (const ifaceName of preferredInterfaces) {
-    if (nets[ifaceName]) {
-      for (const net of nets[ifaceName]) {
-        if (net.family === 'IPv4' && !net.internal && !isTailscaleIpv4(net.address)) {
-          return net.address;
-        }
-      }
-    }
-  }
-
+  let best = null;
+  let bestRank = -1;
   for (const name of Object.keys(nets)) {
     if (name === 'tailscale0') continue;
-    for (const net of nets[name]) {
-      if (net.family === 'IPv4' && !net.internal && !isTailscaleIpv4(net.address)) {
-        return net.address;
+    for (const net of nets[name] || []) {
+      if (net.family !== 'IPv4' || net.internal) continue;
+      if (isTailscaleIpv4(net.address)) continue;
+      const r = rankLanInterface(name);
+      if (r > bestRank) {
+        bestRank = r;
+        best = net.address;
       }
     }
   }
 
-  return null;
+  return best;
 }
 
 // Program management
@@ -1418,5 +1419,9 @@ module.exports = {
   deriveRepoFolderName,
   validateGitUrl,
   cloneOrUpdateRepo,
-  scaffoldStartScript
+  scaffoldStartScript,
+  getLanIpAddress,
+  getPrimaryIpAddress,
+  generateProgramUrls,
+  rankLanInterface
 };
