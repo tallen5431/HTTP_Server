@@ -614,9 +614,46 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// werkzeug/Flask, uvicorn, Dash and many frameworks colorize their startup
+// output and announce the address they bound to. Strip ANSI codes first.
+const ANSI_PATTERN = /\x1B\[[0-9;]*m/g;
+
+// Extract the listening port from a single log line, or null if none is found.
+// Conservative on purpose: a line only counts as an address announcement when
+// it references a local bind address or looks like a "server is up" message,
+// so unrelated URLs printed in the logs don't get mistaken for the bind port.
 function parseListeningPortFromLog(line) {
-  const match = String(line).match(/listening\s+on\s+https?:\/\/[^:\s]+:(\d+)/i);
-  return match ? match[1] : null;
+  const clean = String(line).replace(ANSI_PATTERN, '').trim();
+
+  const looksLikeStartup = /\b(run(?:ning|s)?|listen(?:ing)?|serv(?:e|ing|er)|start(?:ed|ing)?|bound|binding|available)\b/i.test(clean);
+
+  const isLocalBind = (host) => {
+    const h = host.toLowerCase();
+    return h === '0.0.0.0' || h === '127.0.0.1' || h === 'localhost' ||
+      h === '[::]' || h === '[::1]' || /^(?:10|127|192|172)\./.test(h);
+  };
+
+  // 1. A full URL is the most reliable signal: http(s)://host:PORT
+  const urlMatch = clean.match(/https?:\/\/([^\s/]+?):(\d{2,5})\b/i);
+  if (urlMatch && (looksLikeStartup || isLocalBind(urlMatch[1]))) {
+    return urlMatch[2];
+  }
+
+  // 2. A bare local bind address, e.g. "Starting on 0.0.0.0:8001"
+  const bindMatch = clean.match(/\b(?:0\.0\.0\.0|127\.0\.0\.1|localhost|\[::\]|\[::1\]):(\d{2,5})\b/i);
+  if (bindMatch) {
+    return bindMatch[1];
+  }
+
+  // 3. An explicit "port 8059" / "port: 8059", only on a startup-looking line.
+  if (looksLikeStartup) {
+    const portMatch = clean.match(/\bport[:=\s]+(\d{2,5})\b/i);
+    if (portMatch) {
+      return portMatch[1];
+    }
+  }
+
+  return null;
 }
 
 // Start programs and manage processes
@@ -654,9 +691,13 @@ function startProgram(programId, config) {
     const lines = data.toString().split('\n').filter(Boolean);
     lines.forEach(line => {
       logs.push({ time: new Date().toISOString(), text: line });
-      const actualPort = parseListeningPortFromLog(line);
-      if (actualPort) {
-        proc.actualPort = actualPort;
+      // First detected port wins so noisier later lines can't clobber the
+      // address the server actually bound to at startup.
+      if (!proc.actualPort) {
+        const actualPort = parseListeningPortFromLog(line);
+        if (actualPort) {
+          proc.actualPort = actualPort;
+        }
       }
       if (logs.length > 1000) {
         logs.shift();
@@ -669,6 +710,14 @@ function startProgram(programId, config) {
     const lines = data.toString().split('\n').filter(Boolean);
     lines.forEach(line => {
       logs.push({ time: new Date().toISOString(), text: `[ERR] ${line}` });
+      // Many frameworks (werkzeug, uvicorn, Dash) print their startup banner
+      // to stderr, so scan it for the bind port too.
+      if (!proc.actualPort) {
+        const actualPort = parseListeningPortFromLog(line);
+        if (actualPort) {
+          proc.actualPort = actualPort;
+        }
+      }
       if (logs.length > 1000) {
         logs.shift();
       }
