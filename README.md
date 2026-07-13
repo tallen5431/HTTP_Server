@@ -144,6 +144,18 @@ Each program in the `programs` array has the following fields:
   - If not provided, automatically generated from `PORT` environment variable
   - Useful for external domains or custom configurations
 
+URL resolution order for each program:
+
+1. An explicit `url` field, if set
+2. A `PORT` in `env` (parsed from `Start.sh` during discovery, incl. `gunicorn --bind host:port`)
+3. **Runtime detection**: if neither is available, the manager scans the running
+   program's log output for the address it bound to (e.g. `Running on
+   http://0.0.0.0:8059`) and generates the URL from that port. This makes URLs
+   appear for apps that only reveal their port at startup — no config needed.
+
+The bind-all placeholder `0.0.0.0` is never used as the link host; the manager
+substitutes a routable address so the generated link works from your browser.
+
 ### Environment Variables
 
 You can configure the server using these environment variables:
@@ -294,9 +306,12 @@ This happens when PORT is set to a non-numeric value like "HOST" or "$HOST". To 
 
 ### Missing "Open" buttons?
 
-The Open button only appears when a program has a valid URL. To see Open buttons:
+The Open button only appears when a program has a valid URL. The manager will
+also detect the port automatically from a running program's startup logs, so
+starting the program is often enough for the URL to appear. If it still doesn't:
 - Make sure the program has a `PORT` environment variable in config.json
 - Ensure PORT is a valid number (not "HOST" or variable references)
+- Confirm the program prints its address on startup (e.g. `Running on http://0.0.0.0:PORT`)
 - Or manually set a `url` field in the program configuration
 
 ### Programs not starting?

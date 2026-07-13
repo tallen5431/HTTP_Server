@@ -51,6 +51,7 @@ function parseStartScript(scriptPath) {
     const portPatterns = [
       /PORT[=\s]+["']?(\d+)["']?/i,
       /--port[=\s]+["']?(\d+)["']?/i,
+      /--bind[=\s]+["']?[^\s"']*?:(\d+)["']?/i, // gunicorn/uvicorn --bind host:port
       /-p[=\s]+["']?(\d+)["']?/i,
       /listen[=\s]+["']?(\d+)["']?/i,
       /port[=\s]+["']?(\d+)["']?/i

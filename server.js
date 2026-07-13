@@ -17,6 +17,67 @@ const API_TOKEN = process.env.MANAGER_API_TOKEN || null;
 const processes = new Map();
 const processLogs = new Map();
 
+// Ports discovered at runtime by scanning a program's stdout/stderr for the
+// address it actually bound to. This lets the manager generate a URL even when
+// PORT is not declared statically in Start.sh (hardcoded in app code, passed
+// via gunicorn --bind, printed only at startup, etc.).
+const detectedPorts = new Map();
+
+// werkzeug/Flask and many other frameworks colorize their startup output.
+const ANSI_PATTERN = /\x1B\[[0-9;]*m/g;
+
+// Extract the listening port from a single log line, or null if none is found.
+// Conservative on purpose: only treats a line as an address announcement when
+// it either references a local bind address or looks like a "server is up"
+// message, so unrelated URLs in the logs don't get picked up.
+function detectPortFromLogLine(line) {
+  const clean = String(line).replace(ANSI_PATTERN, '').trim();
+
+  const looksLikeStartup = /\b(run(?:ning|s)?|listen(?:ing)?|serv(?:e|ing|er)|start(?:ed|ing)?|bound|binding|available)\b/i.test(clean);
+
+  const isLocalBind = (host) => {
+    const h = host.toLowerCase();
+    return h === '0.0.0.0' || h === '127.0.0.1' || h === 'localhost' ||
+      h === '[::]' || h === '[::1]' || /^(?:10|127|192|172)\./.test(h);
+  };
+
+  // 1. A full URL is the most reliable signal: http(s)://host:PORT
+  const urlMatch = clean.match(/https?:\/\/([^\s/]+?):(\d{2,5})\b/i);
+  if (urlMatch && (looksLikeStartup || isLocalBind(urlMatch[1]))) {
+    return urlMatch[2];
+  }
+
+  // 2. A bare local bind address, e.g. "Starting on 0.0.0.0:8001"
+  const bindMatch = clean.match(/\b(?:0\.0\.0\.0|127\.0\.0\.1|localhost|\[::\]|\[::1\]):(\d{2,5})\b/i);
+  if (bindMatch) {
+    return bindMatch[1];
+  }
+
+  // 3. An explicit "port 8059" / "port: 8059", only on a startup-looking line.
+  if (looksLikeStartup) {
+    const portMatch = clean.match(/\bport[:=\s]+(\d{2,5})\b/i);
+    if (portMatch) {
+      return portMatch[1];
+    }
+  }
+
+  return null;
+}
+
+// Record the first port seen in a program's output. First hit wins so later,
+// noisier log lines can't overwrite the real listening port.
+function recordDetectedPort(programId, line) {
+  if (detectedPorts.has(programId)) {
+    return false;
+  }
+  const port = detectPortFromLogLine(line);
+  if (port) {
+    detectedPorts.set(programId, port);
+    return true;
+  }
+  return false;
+}
+
 // Load configuration (cached with mtime check)
 let cachedConfig = null;
 let cachedConfigMtimeMs = null;
@@ -187,13 +248,22 @@ function generateProgramUrl(program, config) {
     return program.url;
   }
 
-  // Otherwise, attempt to generate from PORT
-  const port = program.env && (program.env.PORT || program.env.port);
+  // Prefer a statically-configured PORT, then fall back to a port detected
+  // from the program's runtime log output.
+  const port = (program.env && (program.env.PORT || program.env.port)) ||
+    detectedPorts.get(program.id);
   if (port) {
     // Use configured hostname or auto-detected IP
-    const hostname = (config && config.hostname && config.hostname !== 'auto')
+    let hostname = (config && config.hostname && config.hostname !== 'auto')
       ? config.hostname
       : getPrimaryIpAddress();
+
+    // 0.0.0.0 / :: are bind-all placeholders, not addresses a browser can
+    // reach. Fall back to a routable IP so the generated link actually works.
+    if (hostname === '0.0.0.0' || hostname === '::') {
+      hostname = getPrimaryIpAddress();
+    }
+
     return `http://${hostname}:${port}`;
   }
 
@@ -370,6 +440,9 @@ function startProgram(programId, config) {
   const logs = [];
   processLogs.set(programId, logs);
 
+  // Start fresh: re-detect the listening port from this run's output.
+  detectedPorts.delete(programId);
+
   proc.stdout.on('data', (data) => {
     const lines = data.toString().split('\n').filter(Boolean);
     lines.forEach(line => {
@@ -377,6 +450,7 @@ function startProgram(programId, config) {
       if (logs.length > 1000) {
         logs.shift();
       }
+      recordDetectedPort(programId, line);
     });
     broadcastStatus();
   });
@@ -388,6 +462,7 @@ function startProgram(programId, config) {
       if (logs.length > 1000) {
         logs.shift();
       }
+      recordDetectedPort(programId, line);
     });
     broadcastStatus();
   });
@@ -677,6 +752,7 @@ app.delete('/api/programs/:id', requireApiToken, (req, res) => {
     // Clean up process logs
     processLogs.delete(programId);
     processes.delete(programId);
+    detectedPorts.delete(programId);
 
     res.json({
       success: true,

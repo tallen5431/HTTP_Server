@@ -20,11 +20,14 @@ function resolveProgramUrl(rawUrl) {
 
   // If this already looks like an absolute http(s) URL, check if we need to rewrite localhost
   if (/^https?:\/\//i.test(trimmed)) {
-    // Replace localhost or 127.0.0.1 with the actual hostname used to access this page
-    // This ensures URLs work from remote clients accessing the manager
+    // Replace localhost, loopback, or the 0.0.0.0 bind-all placeholder with the
+    // actual hostname used to access this page. 0.0.0.0 is not routable from a
+    // browser, so a program that logs http://0.0.0.0:PORT still yields a
+    // working link. This ensures URLs work from remote clients too.
     return trimmed
       .replace(/localhost/g, currentHostname)
-      .replace(/127\.0\.0\.1/g, currentHostname);
+      .replace(/127\.0\.0\.1/g, currentHostname)
+      .replace(/0\.0\.0\.0/g, currentHostname);
   }
 
   const protocol = loc.protocol || 'http:';
