@@ -1,6 +1,8 @@
 node_modules/
 config.json
 config.json.backup.*
+# Imported/cloned programs live here at runtime; they are their own repos.
+projects/
 *.log
 .DS_Store
 .env

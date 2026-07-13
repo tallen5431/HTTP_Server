@@ -275,9 +275,11 @@ function generateConfig(projects) {
  */
 function main() {
   console.log('🔍 HTTP Server Manager - Project Discovery\n');
-  console.log(`Scanning directory: ${PROJECTS_DIR}\n`);
+  // Ensure PROJECTS_DIR is absolute
+  const absoluteProjectsDir = path.resolve(PROJECTS_DIR);
+  console.log(`Scanning directory: ${absoluteProjectsDir}\n`);
 
-  const projects = discoverProjects(PROJECTS_DIR);
+  const projects = discoverProjects(absoluteProjectsDir);
 
   console.log(`\n📊 Discovery Summary:`);
   console.log(`  Total projects found: ${projects.length}`);

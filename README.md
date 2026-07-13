@@ -13,8 +13,7 @@ A simple, self-configuring HTTP server manager that automatically detects your n
 - **🎨 Clean Web UI**: Modern, responsive interface that works on desktop and mobile
 - **🌐 Multi-program Support**: Manage multiple applications from a single interface
 - **🧠 Framework Detection**: Intelligently detects Flask, Django, FastAPI, Node.js, Streamlit and configures accordingly
-- **🎙️ Bundled Vosk Card**: Includes a ready-to-start sample voice transcription card powered by a local Vosk model
-- **📦 Bundled Inventory OCR Card**: Snap phone photos to organize, categorize, and count your stuff — pulls & runs `tallen5431/InventoryOCR`
+- **📥 Import from Git**: Clone any repository straight into your projects folder from the web UI
 
 ## Prerequisites
 
@@ -39,7 +38,7 @@ You have two options:
 Let the manager automatically find all your projects:
 
 ```bash
-# The manager defaults to /home/jupyter-tj/projects
+# The manager defaults to the `projects/` folder next to this install
 # Just run:
 npm start
 
@@ -52,7 +51,7 @@ The manager will:
 - Auto-generate `config.json` with intelligent defaults
 - Detect framework types and PORT configurations
 - Set up environment variables automatically
-- Default to `/home/jupyter-tj/projects` if not specified
+- Default to the `projects/` folder next to this install if not specified
 
 #### Option B: Manual Configuration
 
@@ -108,12 +107,26 @@ node discover-projects.js /path/to/your/projects --output my-config.json
 
 **Web UI Rediscovery:**
 - Click the "🔍 Rediscover" button in the web interface
-- Enter the projects directory path when prompted (defaults to `/home/jupyter-tj/projects`)
+- Enter the projects directory path when prompted (defaults to the `projects/` folder next to this manager install, or whatever `PROJECTS_DIR` is set to)
 - Scans the specified directory and regenerates config.json
 - Automatically backs up existing config
 - Preserves existing program URL overrides/options when a rediscovered program matches the old ID
-- Keeps the bundled Vosk card available even when the scanned projects directory is separate from this manager repository
 - All changes take effect immediately
+
+### Importing a Program from Git
+
+The fastest way to add a program from another repository:
+
+- Click the **"📥 Import from Git"** button in the web interface
+- Paste a repository URL (`https://`, `git://`, `ssh://`, or `git@host:user/repo`)
+- Optionally set a branch and/or the folder name it lands in
+
+The manager will:
+1. Clone the repository into your projects folder (`PROJECTS_DIR`, default `projects/` next to the manager)
+2. If the repo has no `Start.sh`, generate one — a venv-safe launcher for Python projects, `npm install && npm start` for Node projects, or an editable placeholder otherwise
+3. Rediscover projects so the new program appears immediately (existing config is backed up first)
+
+Re-importing the same repository fast-forwards it (`git pull --ff-only`) instead of failing. If a scaffolded `Start.sh` was generated, review it — and set the right `PORT`/env — before starting the program. Cloning runs `git` directly with argument arrays (never a shell string) and validates the URL, so pasted URLs can't inject shell commands.
 
 **What Gets Auto-Detected:**
 - ✅ All directories with `Start.sh` files
@@ -153,6 +166,69 @@ Each program in the `programs` array has the following fields:
 - **hostname** (optional): Per-program hostname override.
 - **preferTailscale** (optional): When `true`, generated URLs prefer the configured/detected Tailscale MagicDNS hostname.
 - **omitPortInUrl** (optional): When `true`, generated URLs omit `:PORT`; useful for Tailscale Serve HTTPS endpoints that proxy port 443 to the local app.
+- **autostart** (optional): When `true`, the program will automatically start when the manager starts. Useful for services that should always be running.
+
+### Autostart on Boot
+
+You can configure programs to start automatically when the manager starts by setting `autostart: true` in your config:
+
+```json
+{
+  "hostname": "auto",
+  "programs": [
+    {
+      "id": "inventory",
+      "name": "InventoryOCR",
+      "path": "/home/user/HTTP_Server/projects/InventoryOCR",
+      "env": { "PORT": "8080" },
+      "autostart": true
+    },
+    {
+      "id": "api-server",
+      "name": "API Server",
+      "path": "/home/user/HTTP_Server/projects/api-server",
+      "env": { "PORT": "8081" },
+      "autostart": true
+    }
+  ]
+}
+```
+
+When the manager starts, any programs with `autostart: true` will launch automatically. This is useful for services that should always be available (e.g., inventory management, APIs, monitoring dashboards).
+
+#### Auto-Launch Manager on Boot (systemd)
+
+To have the HTTP Server Manager itself start automatically after a system reboot, install it as a systemd service:
+
+1. **Copy the service file:**
+   ```bash
+   sudo cp http-server-manager.service /etc/systemd/system/
+   ```
+
+2. **Edit paths if needed** (if your installation is in a different location):
+   ```bash
+   sudo nano /etc/systemd/system/http-server-manager.service
+   # Update WorkingDirectory and ExecStart paths to match your setup
+   ```
+
+3. **Enable and start the service:**
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable http-server-manager
+   sudo systemctl start http-server-manager
+   ```
+
+4. **Check status:**
+   ```bash
+   sudo systemctl status http-server-manager
+   ```
+
+5. **View logs:**
+   ```bash
+   sudo journalctl -u http-server-manager -f
+   ```
+
+The systemd service will automatically restart the manager if it crashes, and it will start on every boot. Combined with per-program `autostart: true` flags, this ensures your services are always running after a reboot.
 
 ### Environment Variables
 
@@ -196,52 +272,18 @@ export PORT=8081
 python app.py
 ```
 
-### Bundled Vosk Voice Transcriber
+### Adding Your Own Programs
 
-The repository includes a sample program at `examples/vosk-transcriber` that is added as a **Vosk Voice Transcriber** card when the manager starts without an existing `config.json`. You can also copy the matching entry from `config.example.json` into your own config.
+The manager is driven entirely by the `projects/` folder. To add a program:
 
-Before starting the card:
+- **Import from Git** (easiest): use the **"📥 Import from Git"** button in the web
+  UI to clone a repository straight into `projects/` (see above).
+- **Drop it in**: copy or clone your project into `projects/<name>/`, make sure it
+  has an executable `Start.sh` that sets `PORT`, then click **🔍 Rediscover**.
 
-1. Install the Python dependency:
-   ```bash
-   python3 -m pip install -r examples/vosk-transcriber/requirements.txt
-   ```
-2. Download and unpack a Vosk speech model into `examples/vosk-transcriber/model`, or set `VOSK_MODEL_PATH` to another unpacked model directory.
-3. Start the card and open the generated HTTPS Tailscale URL to upload a mono PCM WAV file for transcription.
-
-The bundled app defaults to `HOST=0.0.0.0` and `PORT=8090`. Its manager card uses `urlProtocol: "https"`, `preferTailscale: true`, and `omitPortInUrl: true`, so it displays a Tailscale Serve-style URL such as `https://your-machine.your-tailnet.ts.net` when a Tailscale hostname is configured or detectable. Set `tailscaleHostname` in `config.json` or `TAILSCALE_HOSTNAME` in the manager environment if the `tailscale` CLI is unavailable.
-
-### Bundled Inventory OCR
-
-The repository includes a card at `examples/inventory-ocr` that turns photos you
-take on your phone into an organized, searchable inventory — track **what** each
-item is, **where** it lives, **how many** you have, and attach photos. When the
-card starts, its `Start.sh` clones (or updates) the app from
-[`tallen5431/InventoryOCR`](https://github.com/tallen5431/InventoryOCR), creates
-a Python virtual environment, installs the requirements, and serves the Dash web
-app at the site root so the manager's **Open** link goes straight into it.
-
-The card starts on `HOST=0.0.0.0` and `PORT=8001` and generates a URL like
-`http://<detected-ip>:8001`. Useful env vars (edit them from the card's **Edit**
-dialog):
-
-- `URL_PREFIX` — leave empty to serve at the root (default). Set to `/inventory`
-  only if you place it behind a reverse proxy on that path.
-- `INVENTORY_OCR_BRANCH` — which branch of the InventoryOCR repo to run
-  (default `main`).
-- `GITHUB_TOKEN` — a GitHub PAT with repo read scope, needed only if the
-  repository is private.
-- `OLLAMA_HOST` / `OLLAMA_VISION_MODEL` — the app's **Identify from photo**
-  button asks a local Ollama vision model what an item is (plus specs, estimated
-  value, dimensions). Defaults to the desktop Ollama via Tailscale
-  (`http://100.98.112.1:11434`) and `llama3.2-vision`; pull a vision model first
-  (`ollama pull llama3.2-vision`).
-
-Your inventory data and photos live inside the cloned `examples/inventory-ocr/src`
-folder and are ignored by git, so they persist across restarts and updates.
-Optional OCR text extraction needs the Tesseract binary
-(`sudo apt-get install -y tesseract-ocr`); everything else works without it. See
-`examples/inventory-ocr/README.md` for details.
+Either way the new program appears as a card with an auto-generated URL. Nothing
+is bundled into this repository — your projects and their data live under
+`projects/`, which is ignored by git so it persists across manager updates.
 
 ## API Endpoints
 
@@ -262,6 +304,7 @@ The manager provides a REST API:
 **Configuration:**
 - `GET /api/config` - Get current configuration
 - `POST /api/rediscover` - Rediscover projects and regenerate config (requires auth)
+- `POST /api/import-repo` - Clone a git repo into the projects folder, scaffold a `Start.sh` if needed, and rediscover (requires auth). Body: `{ "repoUrl": "...", "branch": "optional", "name": "optional-folder-name" }`
 
 **System:**
 - `GET /api/stats` - Get statistics

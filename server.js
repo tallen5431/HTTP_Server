@@ -9,103 +9,12 @@ const WebSocket = require('ws');
 
 // Configuration
 const CONFIG_FILE = process.env.CONFIG_FILE || './config.json';
-const PROJECTS_DIR = process.env.PROJECTS_DIR || '/opt/http-server-manager/projects';
+// Default the projects directory to a `projects/` folder next to this manager
+// install, so Rediscover and Import always target a path that exists wherever the
+// manager is checked out (override with the PROJECTS_DIR environment variable).
+const PROJECTS_DIR = process.env.PROJECTS_DIR || path.resolve(__dirname, 'projects');
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.MANAGER_API_TOKEN || null;
-
-function getBundledVoskTranscriberProgram() {
-  const programPath = path.join(__dirname, 'examples', 'vosk-transcriber');
-  return {
-    id: 'vosk-transcriber',
-    name: 'Vosk Voice Transcriber',
-    path: programPath,
-    env: {
-      HOST: '0.0.0.0',
-      PORT: '8090',
-      VOSK_MODEL_PATH: path.join(programPath, 'model')
-    },
-    urlProtocol: 'https',
-    preferTailscale: true,
-    omitPortInUrl: true,
-    comment: 'Bundled sample card for local voice transcription with a Vosk model. Install requirements and place a model at VOSK_MODEL_PATH before starting.'
-  };
-}
-
-function getBundledCodeSmithProgram() {
-  const programPath = path.join(__dirname, 'examples', 'codesmith');
-  return {
-    id: 'codesmith',
-    name: 'CodeSmith',
-    path: programPath,
-    env: {
-      HOST: '0.0.0.0',
-      PORT: '8050',
-      GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
-      CODESMITH_LLM_BASE_URL: process.env.CODESMITH_LLM_BASE_URL || 'http://100.98.112.1:11434/v1',
-      CODESMITH_LLM_API_KEY: process.env.CODESMITH_LLM_API_KEY || 'not-needed',
-      CODESMITH_LLM_MODEL: process.env.CODESMITH_LLM_MODEL || 'qwen2.5-coder:7b'
-    },
-    comment: 'AI-assisted code modification UI. Set GITHUB_TOKEN to a GitHub PAT with repo read access so Start.sh can clone the private CodeSmith repo. Set CODESMITH_LLM_BASE_URL to your Ollama endpoint (default: desktop-glpggos via Tailscale).'
-  };
-}
-
-function getBundledQwenSystemAssistantProgram() {
-  const programPath = path.join(__dirname, 'examples', 'qwen-system-assistant');
-  return {
-    id: 'qwen-system-assistant',
-    name: 'Qwen System Assistant',
-    path: programPath,
-    env: {
-      HOST: '0.0.0.0',
-      PORT: '8091',
-      OLLAMA_HOST: 'http://100.98.112.1:11434',
-      OLLAMA_MODEL: 'qwen2.5-coder:0.5b',
-      OLLAMA_NUM_CTX: '8192',
-      OLLAMA_NUM_PREDICT: '512',
-      MAX_MODEL_CONTEXT_CHARS: '24000',
-      SSH_USER: 'tj'
-    },
-    comment: 'Bundled local AI assistant card. Connects to Ollama on desktop-glpggos via Tailscale (100.98.112.1:11434). Use the device selector in the UI to SSH into pi5, Jetson, or NucBox for remote system/file scans.'
-  };
-}
-
-function getBundledInventoryOcrProgram() {
-  const programPath = path.join(__dirname, 'examples', 'inventory-ocr');
-  return {
-    id: 'inventory-ocr',
-    name: 'Inventory OCR',
-    path: programPath,
-    env: {
-      HOST: '0.0.0.0',
-      PORT: '8001',
-      URL_PREFIX: '',
-      INVENTORY_OCR_BRANCH: process.env.INVENTORY_OCR_BRANCH || 'main',
-      GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
-      OLLAMA_HOST: process.env.OLLAMA_HOST || 'http://100.98.112.1:11434',
-      OLLAMA_VISION_MODEL: process.env.OLLAMA_VISION_MODEL || 'llama3.2-vision'
-    },
-    comment: 'Snap phone photos to organize, categorize, and count your stuff (location, quantity, notes, OCR). "Identify from photo" uses a local Ollama vision model (OLLAMA_HOST/OLLAMA_VISION_MODEL) — pull one first, e.g. `ollama pull llama3.2-vision`. Start.sh clones tallen5431/InventoryOCR and runs it at the site root. Set GITHUB_TOKEN if the repo is private.'
-  };
-}
-
-function ensureBundledPrograms(config) {
-  if (!config.programs.some(program => isVoskProgram(program))) {
-    config.programs.push(getBundledVoskTranscriberProgram());
-  }
-  if (!config.programs.some(program => isCodeSmithProgram(program))) {
-    config.programs.push(getBundledCodeSmithProgram());
-  }
-  if (!config.programs.some(program => isQwenSystemAssistantProgram(program))) {
-    config.programs.push(getBundledQwenSystemAssistantProgram());
-  }
-  if (!config.programs.some(program => isInventoryOcrProgram(program))) {
-    config.programs.push(getBundledInventoryOcrProgram());
-  }
-  return config;
-}
-
-// Kept for backwards compatibility with any external callers
-const ensureBundledVoskProgram = ensureBundledPrograms;
 
 function mergeExistingProgramUrlOptions(newProgram, existingProgram) {
   if (!existingProgram) return;
@@ -133,11 +42,7 @@ function preserveExistingProgramUrlOptions(newConfig, existingConfig) {
 
   for (const newProgram of newConfig.programs) {
     const existingProgram = existingConfig.programs.find(program =>
-      program.id === newProgram.id ||
-      (isVoskProgram(program) && isVoskProgram(newProgram)) ||
-      (isCodeSmithProgram(program) && isCodeSmithProgram(newProgram)) ||
-      (isQwenSystemAssistantProgram(program) && isQwenSystemAssistantProgram(newProgram)) ||
-      (isInventoryOcrProgram(program) && isInventoryOcrProgram(newProgram))
+      program.id === newProgram.id
     );
     mergeExistingProgramUrlOptions(newProgram, existingProgram);
   }
@@ -167,7 +72,7 @@ function loadConfig() {
         try {
           const { discoverProjects, generateConfig } = require('./discover-projects');
           const projects = discoverProjects(PROJECTS_DIR);
-          const autoConfig = ensureBundledVoskProgram(generateConfig(projects));
+          const autoConfig = generateConfig(projects);
 
           // Save the auto-generated config
           fs.writeFileSync(CONFIG_FILE, JSON.stringify(autoConfig, null, 2), 'utf8');
@@ -182,10 +87,11 @@ function loadConfig() {
         }
       }
 
-      // Fallback default config so the UI can still start.
+      // Fallback empty config so the UI can still start. Add programs by
+      // dropping them into PROJECTS_DIR and hitting Rediscover, or Import from Git.
       const defaultConfig = {
         hostname: 'auto',
-        programs: [getBundledVoskTranscriberProgram(), getBundledCodeSmithProgram(), getBundledQwenSystemAssistantProgram(), getBundledInventoryOcrProgram()]
+        programs: []
       };
       cachedConfig = defaultConfig;
       cachedConfigMtimeMs = null;
@@ -195,7 +101,7 @@ function loadConfig() {
     const stats = fs.statSync(CONFIG_FILE);
     if (!cachedConfig || stats.mtimeMs !== cachedConfigMtimeMs) {
       const data = fs.readFileSync(CONFIG_FILE, 'utf8');
-      const config = ensureBundledPrograms(JSON.parse(data));
+      const config = JSON.parse(data);
       validateConfig(config);
       cachedConfig = config;
       cachedConfigMtimeMs = stats.mtimeMs;
@@ -208,49 +114,38 @@ function loadConfig() {
   }
 }
 
+// Keep at most this many config.json.backup.* files so they don't pile up.
+const MAX_CONFIG_BACKUPS = 5;
 
-function isVoskProgram(program) {
-  return program && (
-    program.id === 'vosk-transcriber' ||
-    /vosk/i.test(program.name || '') ||
-    /vosk-transcriber/.test(program.path || '')
-  );
-}
-
-function isCodeSmithProgram(program) {
-  return program && (
-    program.id === 'codesmith' ||
-    /^codesmith$/i.test(program.name || '') ||
-    /[/\\]codesmith([/\\]|$)/.test(program.path || '')
-  );
-}
-
-function isQwenSystemAssistantProgram(program) {
-  return program && (
-    program.id === 'qwen-system-assistant' ||
-    /qwen system assistant/i.test(program.name || '') ||
-    /qwen-system-assistant/.test(program.path || '')
-  );
-}
-
-function isInventoryOcrProgram(program) {
-  return program && (
-    program.id === 'inventory-ocr' ||
-    /^inventory\s*ocr$/i.test(program.name || '') ||
-    /inventory-ocr/.test(program.path || '')
-  );
-}
-
-function applyDefaultProgramUrlOptions(program) {
-  // Keep existing user-provided values, but make legacy Vosk entries generate
-  // the intended Tailscale HTTPS card URL even when config.json predates these
-  // options and was not copied from config.example.json.
-  if (isVoskProgram(program) && !program.url) {
-    if (program.urlProtocol === undefined) program.urlProtocol = 'https';
-    if (program.preferTailscale === undefined) program.preferTailscale = true;
-    if (program.omitPortInUrl === undefined) program.omitPortInUrl = true;
+// Back up the current config (if any) to config.json.backup.<timestamp>, then
+// prune the oldest backups beyond MAX_CONFIG_BACKUPS. Returns the backup path,
+// or null when there was nothing to back up.
+function backupConfigFile() {
+  if (!fs.existsSync(CONFIG_FILE)) {
+    return null;
   }
+
+  const backupFile = `${CONFIG_FILE}.backup.${Date.now()}`;
+  fs.copyFileSync(CONFIG_FILE, backupFile);
+
+  // Prune old backups, keeping the most recent MAX_CONFIG_BACKUPS.
+  try {
+    const dir = path.dirname(CONFIG_FILE);
+    const base = path.basename(CONFIG_FILE) + '.backup.';
+    const backups = fs.readdirSync(dir)
+      .filter(name => name.startsWith(base))
+      .sort(); // timestamp suffix sorts chronologically
+    const excess = backups.length - MAX_CONFIG_BACKUPS;
+    for (let i = 0; i < excess; i++) {
+      fs.unlinkSync(path.join(dir, backups[i]));
+    }
+  } catch (err) {
+    console.warn(`[manager] Could not prune old config backups: ${err.message}`);
+  }
+
+  return backupFile;
 }
+
 
 // Validate configuration
 function validateConfig(config) {
@@ -289,7 +184,11 @@ function validateConfig(config) {
       delete program.url;
     }
 
-    applyDefaultProgramUrlOptions(program);
+    // Validate autostart if present (should be boolean)
+    if (program.autostart !== undefined && typeof program.autostart !== 'boolean') {
+      console.warn(`Program "${program.id}" has a non-boolean autostart; this will be ignored.`);
+      delete program.autostart;
+    }
   });
 
   return true;
@@ -345,29 +244,92 @@ function getPrimaryIpAddress() {
   const { networkInterfaces } = require('os');
   const nets = networkInterfaces();
 
-  // Prioritize Tailscale, then common LAN interfaces
-  const preferredInterfaces = ['tailscale0', 'eth0', 'en0', 'wlan0'];
-
-  for (const ifaceName of preferredInterfaces) {
-    if (nets[ifaceName]) {
-      for (const net of nets[ifaceName]) {
-        if (net.family === 'IPv4' && !net.internal) {
-          return net.address;
-        }
-      }
-    }
-  }
-
-  // Fallback: iterate through all interfaces
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
+  // Tailscale first (its address is reachable from anywhere the tailnet spans).
+  if (nets['tailscale0']) {
+    for (const net of nets['tailscale0']) {
       if (net.family === 'IPv4' && !net.internal) {
         return net.address;
       }
     }
   }
 
-  return 'localhost';
+  // Otherwise the best LAN address — wired preferred over Wi-Fi (see
+  // getLanIpAddress) — falling back to localhost if nothing qualifies.
+  return getLanIpAddress() || 'localhost';
+}
+
+// Tailscale hands out addresses in the 100.64.0.0/10 CGNAT range (second octet
+// 64–127). Used to tell a Tailscale address apart from a normal LAN address.
+function isTailscaleIpv4(address) {
+  return /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(String(address || ''));
+}
+
+// The machine's Tailscale IPv4 (e.g. 100.92.90.118), or null if Tailscale is
+// not up. Reads the tailscale0 interface first, then falls back to scanning for
+// any CGNAT-range address.
+function getTailscaleIpAddress() {
+  const { networkInterfaces } = require('os');
+  const nets = networkInterfaces();
+
+  if (nets['tailscale0']) {
+    for (const net of nets['tailscale0']) {
+      if (net.family === 'IPv4' && !net.internal) {
+        return net.address;
+      }
+    }
+  }
+
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal && isTailscaleIpv4(net.address)) {
+        return net.address;
+      }
+    }
+  }
+
+  return null;
+}
+
+// Classify an interface name so we can prefer the address other LAN devices can
+// actually reach us on. Wired Ethernet (en*/eth*) beats Wi-Fi (wl*), and both
+// beat virtual bridges (docker/veth/virbr/tun…). This matters when a machine is
+// on Wi-Fi AND Ethernet at once: some routers isolate Wi-Fi clients from each
+// other, so the wired address is the reachable one and must win.
+function isVirtualInterface(name) {
+  return /^(docker|br-|veth|virbr|vmnet|vboxnet|zt|utun|llw|awdl|tun|tap)/i.test(name);
+}
+
+function rankLanInterface(name) {
+  if (/^(en|eth)/i.test(name)) return 3;   // wired ethernet (eth0, en0, enp3s0, eno1…)
+  if (/^wl/i.test(name)) return 2;          // wireless (wlan0, wlp1s0…)
+  if (isVirtualInterface(name)) return 0;   // docker/vm/tunnel bridges — last resort
+  return 1;                                 // anything else
+}
+
+// The machine's primary LAN IPv4 (e.g. 192.168.1.199), excluding Tailscale.
+// This is the address other devices on the same home/office network use. When
+// several interfaces qualify (e.g. Wi-Fi + Ethernet), the highest-ranked one
+// wins so we advertise the wired, reachable address rather than the first found.
+function getLanIpAddress() {
+  const { networkInterfaces } = require('os');
+  const nets = networkInterfaces();
+
+  let best = null;
+  let bestRank = -1;
+  for (const name of Object.keys(nets)) {
+    if (name === 'tailscale0') continue;
+    for (const net of nets[name] || []) {
+      if (net.family !== 'IPv4' || net.internal) continue;
+      if (isTailscaleIpv4(net.address)) continue;
+      const r = rankLanInterface(name);
+      if (r > bestRank) {
+        bestRank = r;
+        best = net.address;
+      }
+    }
+  }
+
+  return best;
 }
 
 // Program management
@@ -409,6 +371,7 @@ function getProgramStatus(programId, config, urlContext = null) {
     name: program.name,
     status: isRunning ? 'running' : 'stopped',
     url: generateProgramUrl(program, config, proc && proc.actualPort, urlContext),
+    urls: generateProgramUrls(program, config, proc && proc.actualPort),
     pid: isRunning ? proc.pid : null,
     uptime: isRunning && proc.spawnDate ? Date.now() - proc.spawnDate : 0
   };
@@ -456,6 +419,49 @@ function generateProgramUrl(program, config, runtimePort = null, urlContext = nu
   }
 
   return null;
+}
+
+// Build the full set of addresses a program can be reached at — typically a
+// Local (LAN) URL and a Tailscale URL — so the UI can show both instead of
+// guessing one. Returns an array of { label, url, kind }. An explicit
+// program.url override collapses this to a single entry.
+function generateProgramUrls(program, config, runtimePort = null) {
+  if (program.url) {
+    return [{ label: 'URL', url: program.url, kind: 'custom' }];
+  }
+
+  const port = runtimePort || (program.env && (program.env.PORT || program.env.port));
+  if (!port) return [];
+
+  const protocol = program.urlProtocol || (config && config.urlProtocol) || 'http';
+  const shouldOmitPort = Boolean(program.omitPortInUrl || (config && config.omitPortInUrl));
+  const portSegment = shouldOmitPort ? '' : `:${port}`;
+
+  const urls = [];
+  const seen = new Set();
+  const add = (label, kind, host) => {
+    const clean = String(host || '').replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    if (!clean || isLoopbackHostname(clean)) return;
+    const url = `${protocol}://${clean}${portSegment}`;
+    if (seen.has(url)) return;
+    seen.add(url);
+    urls.push({ label, url, kind });
+  };
+
+  // A configured, non-"auto" hostname (per-program or global) is the operator's
+  // explicit choice — list it first.
+  const configuredHostname = program.hostname || program.host || (config && config.hostname);
+  if (configuredHostname && configuredHostname !== 'auto') {
+    add('Custom', 'configured', configuredHostname);
+  }
+
+  // Local LAN address — what other devices on the same Wi-Fi/Ethernet use.
+  add('Local', 'local', getLanIpAddress());
+
+  // Remote access over Tailscale — prefer the MagicDNS name, else the 100.x IP.
+  add('Tailscale', 'tailscale', getTailscaleHostname(config) || getTailscaleIpAddress());
+
+  return urls;
 }
 
 function getAllProgramsStatus(config, urlContext = null) {
@@ -671,7 +677,7 @@ function startProgram(programId, config) {
   const startScript = path.join(program.path, 'Start.sh');
 
   if (!fs.existsSync(startScript)) {
-    console.warn(`Start script not found for program: ${programId}`);
+    throw new Error(`Start.sh not found at ${startScript}`);
   }
 
   const env = {
@@ -679,9 +685,14 @@ function startProgram(programId, config) {
     ...program.env
   };
 
+  // detached:true makes the child its own process-group leader so we can later
+  // signal the WHOLE group (see signalProcessTree). Many Start.sh scripts don't
+  // exec their app — "npm start" forks node, a bare "python app.py" forks python —
+  // so killing only bash would orphan the real process and leave its port bound.
   const proc = spawn('bash', [startScript], {
     cwd: program.path,
-    env
+    env,
+    detached: true
   });
 
   const logs = [];
@@ -758,18 +769,32 @@ function startProgram(programId, config) {
   };
 }
 
+// Signal the child's entire process group (negative PID). Because programs are
+// spawned detached, the bash child leads its own group, so this reaches whatever
+// the Start.sh forked (node under npm, python, a waitress worker…) instead of
+// leaving it orphaned and holding the port. Falls back to signalling just the
+// child, and swallows ESRCH when the group is already gone.
+function signalProcessTree(proc, signal) {
+  if (!proc || proc.pid == null) return;
+  try {
+    process.kill(-proc.pid, signal);
+  } catch (err) {
+    try { proc.kill(signal); } catch (_) { /* already exited */ }
+  }
+}
+
 function stopProgram(programId) {
   const proc = processes.get(programId);
   if (!proc || !proc.isRunning) {
     throw new Error('Program is not running');
   }
 
-  proc.kill('SIGTERM');
+  signalProcessTree(proc, 'SIGTERM');
 
-  // Force kill after 10 seconds if it hasn't exited yet
+  // Force kill the whole group after 10 seconds if it hasn't exited yet
   setTimeout(() => {
     if (proc.isRunning) {
-      proc.kill('SIGKILL');
+      signalProcessTree(proc, 'SIGKILL');
     }
   }, 10000);
 
@@ -779,7 +804,234 @@ function stopProgram(programId) {
   };
 }
 
+// Launch all programs marked with autostart: true
+function launchAutostart(config) {
+  if (!config || !Array.isArray(config.programs)) return;
+
+  const autostartPrograms = config.programs.filter(p => p.autostart === true);
+  if (autostartPrograms.length === 0) return;
+
+  console.log(`\n📦 Autostarting ${autostartPrograms.length} program(s)...`);
+  autostartPrograms.forEach(program => {
+    try {
+      const result = startProgram(program.id, config);
+      console.log(`  ✓ ${program.name} (${program.id}) started [PID ${result.pid}]`);
+    } catch (err) {
+      console.error(`  ✗ ${program.name} (${program.id}) failed to start: ${err.message}`);
+    }
+  });
+  console.log();
+}
+
 // Browse a directory and return discovered projects (without modifying config)
+// ---------------------------------------------------------------------------
+// Project import / discovery helpers
+// ---------------------------------------------------------------------------
+
+// Regenerate config.json from a projects directory, preserving per-program URL
+// overrides for programs matched by ID. Shared by /api/rediscover and /api/import-repo.
+function runRediscovery(projectsDir) {
+  if (!projectsDir) {
+    throw new Error('No projects directory specified. Set PROJECTS_DIR or pass projectsDir.');
+  }
+  if (!fs.existsSync(projectsDir)) {
+    throw new Error(`Projects directory not found: ${projectsDir}`);
+  }
+
+  const existingConfig = fs.existsSync(CONFIG_FILE) ? loadConfig() : null;
+
+  // Backup existing config before we overwrite it.
+  const backupFile = backupConfigFile();
+  if (backupFile) {
+    console.log(`[manager] Backed up config to: ${backupFile}`);
+  }
+
+  const { discoverProjects, generateConfig } = require('./discover-projects');
+  const projects = discoverProjects(projectsDir);
+  const newConfig = preserveExistingProgramUrlOptions(generateConfig(projects), existingConfig);
+  validateConfig(newConfig);
+
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
+  console.log(`[manager] Regenerated config with ${projects.length} project(s)`);
+
+  // Clear cache so the next read reloads.
+  cachedConfig = null;
+  cachedConfigMtimeMs = null;
+
+  return projects;
+}
+
+// Derive a safe folder name from a git URL (or an explicit override).
+function deriveRepoFolderName(repoUrl, override) {
+  let name = (override || '').trim();
+  if (!name) {
+    // Strip query/fragment and trailing slashes, drop a ".git" suffix, then take
+    // the last path segment. Handles both URL and scp-like (git@host:owner/repo).
+    let u = String(repoUrl || '').trim().replace(/[#?].*$/, '').replace(/\/+$/, '');
+    u = u.replace(/\.git$/i, '');
+    name = u.split(/[/:]/).filter(Boolean).pop() || '';
+  }
+  // Sanitize to a safe directory name.
+  return name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+}
+
+// Basic allowlist validation so we never hand arbitrary/option-like strings to git.
+// Returns an error message string, or null when the URL looks acceptable.
+function validateGitUrl(repoUrl) {
+  const url = String(repoUrl || '').trim();
+  if (!url) return 'Repository URL is required.';
+  if (url.startsWith('-')) return 'Invalid repository URL.';
+  const ok =
+    /^https?:\/\/\S+$/i.test(url) ||
+    /^git:\/\/\S+$/i.test(url) ||
+    /^ssh:\/\/\S+$/i.test(url) ||
+    /^[a-z0-9._-]+@[a-z0-9._-]+:\S+$/i.test(url); // scp-like git@host:owner/repo
+  if (!ok) {
+    return 'Unsupported repository URL. Use https://, git://, ssh://, or git@host:owner/repo.';
+  }
+  return null;
+}
+
+// Clone (or, if the folder is already a git repo, fast-forward) a repository into
+// destPath. Uses spawn with an args array (never a shell string) to avoid command
+// injection, and enforces a timeout so a hung clone can't wedge the manager.
+function cloneOrUpdateRepo(repoUrl, destPath, branch) {
+  return new Promise((resolve, reject) => {
+    const exists = fs.existsSync(destPath);
+    const isGitRepo = exists && fs.existsSync(path.join(destPath, '.git'));
+
+    if (exists && !isGitRepo) {
+      return reject(new Error(
+        `A non-git folder already exists at ${destPath}. Remove it or choose a different name.`
+      ));
+    }
+
+    let args;
+    if (isGitRepo) {
+      args = ['-C', destPath, 'pull', '--ff-only'];
+    } else {
+      args = ['clone', '--depth', '1'];
+      if (branch) args.push('--branch', branch);
+      args.push('--', repoUrl, destPath);
+    }
+
+    const git = spawn('git', args, {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+    });
+
+    let out = '';
+    git.stdout.on('data', d => { out += d.toString(); });
+    git.stderr.on('data', d => { out += d.toString(); });
+
+    const timer = setTimeout(() => {
+      git.kill('SIGKILL');
+      reject(new Error('git operation timed out after 180s.'));
+    }, 180000);
+
+    git.on('error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`Failed to run git: ${err.message}. Is git installed?`));
+    });
+
+    git.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ updated: isGitRepo, output: out.trim() });
+      } else {
+        reject(new Error(`git exited with code ${code}: ${out.trim().slice(-500)}`));
+      }
+    });
+  });
+}
+
+// If a freshly cloned project has no Start.sh, scaffold a sensible one so the
+// manager can launch it. Detection mirrors discover-projects.js (Node vs Python
+// vs generic). The Python variant uses a venv-safe launcher pattern.
+function scaffoldStartScript(projectPath) {
+  const startPath = path.join(projectPath, 'Start.sh');
+  if (fs.existsSync(startPath)) {
+    return { created: false };
+  }
+
+  const has = (f) => fs.existsSync(path.join(projectPath, f));
+  let body;
+  let kind;
+
+  if (has('package.json')) {
+    kind = 'node';
+    body = [
+      '#!/usr/bin/env bash',
+      '# Auto-generated by HTTP Server Manager on import. Edit as needed.',
+      'set -euo pipefail',
+      'cd "$(dirname "${BASH_SOURCE[0]}")"',
+      '',
+      'export HOST="${HOST:-0.0.0.0}"',
+      '# Default off 3000 — that is the manager\'s own port. Change to suit your app.',
+      'export PORT="${PORT:-8080}"',
+      '',
+      '[ -d node_modules ] || npm install',
+      'npm start',
+      ''
+    ].join('\n');
+  } else if (has('requirements.txt') || has('app.py') || has('run.py') || has('main.py')) {
+    kind = 'python';
+    const entry = has('app.py') ? 'app.py'
+      : has('run.py') ? 'run.py'
+      : has('main.py') ? 'main.py'
+      : 'app.py';
+    body = [
+      '#!/usr/bin/env bash',
+      '# Auto-generated by HTTP Server Manager on import. Edit as needed.',
+      'set -euo pipefail',
+      'APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'cd "$APP_DIR"',
+      '',
+      'VENV_PY="$APP_DIR/.venv/bin/python"',
+      'if [[ ! -x "$VENV_PY" ]]; then',
+      '  SYS_PY="$(command -v python3 || true)"',
+      '  [[ -n "$SYS_PY" ]] || { echo "[ERROR] python3 not found"; exit 1; }',
+      '  echo "[SETUP] Creating virtualenv at .venv..."',
+      '  "$SYS_PY" -m venv "$APP_DIR/.venv"',
+      'fi',
+      '',
+      'if [[ -f requirements.txt ]]; then',
+      '  echo "[SETUP] Installing requirements..."',
+      '  "$VENV_PY" -m pip install --upgrade pip >/dev/null',
+      '  "$VENV_PY" -m pip install -r requirements.txt',
+      'fi',
+      '',
+      'export HOST="${HOST:-0.0.0.0}"',
+      'export PORT="${PORT:-8000}"',
+      '',
+      `echo "[RUN] Starting ${entry} (HOST=$HOST PORT=$PORT)"`,
+      `exec "$VENV_PY" "${entry}"`,
+      ''
+    ].join('\n');
+  } else {
+    kind = 'placeholder';
+    body = [
+      '#!/usr/bin/env bash',
+      '# Auto-generated placeholder — EDIT THIS before starting the program.',
+      '# The manager could not detect how to launch this project. Replace the',
+      '# command below with the one that starts your app, and set PORT to the',
+      '# port it listens on.',
+      'set -euo pipefail',
+      'cd "$(dirname "${BASH_SOURCE[0]}")"',
+      '',
+      'export HOST="${HOST:-0.0.0.0}"',
+      'export PORT="${PORT:-8080}"',
+      '',
+      'echo "[manager] Start.sh for this project is not configured yet." >&2',
+      'echo "[manager] Edit $(pwd)/Start.sh to launch your app." >&2',
+      'exit 1',
+      ''
+    ].join('\n');
+  }
+
+  fs.writeFileSync(startPath, body, { mode: 0o755 });
+  return { created: true, kind };
+}
+
 app.get('/api/browse-projects', (req, res) => {
   const dir = req.query.dir || PROJECTS_DIR;
 
@@ -834,45 +1086,7 @@ app.post('/api/rediscover', requireApiToken, (req, res) => {
 
   try {
     const projectsDir = req.body.projectsDir || PROJECTS_DIR;
-
-    if (!projectsDir) {
-      return res.status(400).json({
-        success: false,
-        error: 'No projects directory specified. Set PROJECTS_DIR environment variable or provide projectsDir in request body.'
-      });
-    }
-
-    if (!fs.existsSync(projectsDir)) {
-      return res.status(404).json({
-        success: false,
-        error: `Projects directory not found: ${projectsDir}`
-      });
-    }
-
-    const existingConfig = fs.existsSync(CONFIG_FILE) ? loadConfig() : null;
-
-    // Backup existing config
-    if (fs.existsSync(CONFIG_FILE)) {
-      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
-      fs.copyFileSync(CONFIG_FILE, backupFile);
-      console.log(`[manager] Backed up config to: ${backupFile}`);
-    }
-
-    // Run discovery
-    const { discoverProjects, generateConfig } = require('./discover-projects');
-    const projects = discoverProjects(projectsDir);
-    const newConfig = ensureBundledVoskProgram(
-      preserveExistingProgramUrlOptions(generateConfig(projects), existingConfig)
-    );
-    validateConfig(newConfig);
-
-    // Save new config
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
-    console.log(`[manager] Regenerated config with ${projects.length} project(s)`);
-
-    // Clear cache to force reload
-    cachedConfig = null;
-    cachedConfigMtimeMs = null;
+    const projects = runRediscovery(projectsDir);
 
     res.json({
       success: true,
@@ -888,6 +1102,77 @@ app.post('/api/rediscover', requireApiToken, (req, res) => {
       success: false,
       error: err.message
     });
+  }
+});
+
+// Import a program from a git repository: clone it into the projects folder,
+// scaffold a Start.sh if the repo doesn't ship one, then rediscover so it shows
+// up in the manager. Cloning uses spawn(git, [...]) — never a shell string.
+app.post('/api/import-repo', requireApiToken, async (req, res) => {
+  try {
+    const { repoUrl, branch, name } = req.body || {};
+
+    const urlError = validateGitUrl(repoUrl);
+    if (urlError) {
+      return res.status(400).json({ success: false, error: urlError });
+    }
+
+    const folderName = deriveRepoFolderName(repoUrl, name);
+    if (!folderName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Could not determine a folder name from the URL. Provide a name explicitly.'
+      });
+    }
+
+    const cleanBranch = (branch || '').trim();
+    if (cleanBranch && !/^[A-Za-z0-9._\/-]+$/.test(cleanBranch)) {
+      return res.status(400).json({ success: false, error: 'Invalid branch name.' });
+    }
+
+    // Ensure the projects directory exists, then resolve the destination and
+    // guard against a name that would escape the projects folder.
+    fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+    const resolvedRoot = path.resolve(PROJECTS_DIR);
+    const resolvedDest = path.resolve(path.join(PROJECTS_DIR, folderName));
+    if (resolvedDest !== resolvedRoot && !resolvedDest.startsWith(resolvedRoot + path.sep)) {
+      return res.status(400).json({ success: false, error: 'Invalid destination path.' });
+    }
+
+    console.log(`[manager] Importing ${repoUrl} -> ${resolvedDest}`);
+    const cloneResult = await cloneOrUpdateRepo(String(repoUrl).trim(), resolvedDest, cleanBranch);
+
+    // Make sure the manager can actually launch it.
+    const scaffold = scaffoldStartScript(resolvedDest);
+
+    // Regenerate config so the new project appears in the UI.
+    const projects = runRediscovery(PROJECTS_DIR);
+    const imported = projects.find(p => path.resolve(p.path) === resolvedDest) || null;
+
+    const bits = [`${cloneResult.updated ? 'Updated' : 'Cloned'} ${folderName}`];
+    if (scaffold.created) {
+      bits.push(scaffold.kind === 'placeholder'
+        ? 'no launch command detected — edit the generated Start.sh before starting'
+        : `generated a ${scaffold.kind} Start.sh — review it before starting`);
+    }
+    if (!imported) {
+      bits.push('not yet runnable (no Start.sh detected)');
+    }
+
+    res.json({
+      success: true,
+      action: cloneResult.updated ? 'updated' : 'cloned',
+      folderName,
+      path: resolvedDest,
+      program: imported,
+      scaffolded: scaffold.created ? scaffold.kind : null,
+      message: bits.join(' — ')
+    });
+
+    setTimeout(() => broadcastStatus(), 500);
+  } catch (err) {
+    console.error('[manager] Import failed:', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -936,10 +1221,7 @@ app.put('/api/programs/:id', requireApiToken, (req, res) => {
     validateConfig(config);
 
     // Backup existing config
-    if (fs.existsSync(CONFIG_FILE)) {
-      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
-      fs.copyFileSync(CONFIG_FILE, backupFile);
-    }
+    backupConfigFile();
 
     // Save updated config
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
@@ -1001,10 +1283,7 @@ app.post('/api/programs', requireApiToken, (req, res) => {
     validateConfig(config);
 
     // Backup existing config
-    if (fs.existsSync(CONFIG_FILE)) {
-      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
-      fs.copyFileSync(CONFIG_FILE, backupFile);
-    }
+    backupConfigFile();
 
     // Save updated config
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
@@ -1051,17 +1330,14 @@ app.delete('/api/programs/:id', requireApiToken, (req, res) => {
     const proc = processes.get(programId);
     if (proc && proc.isRunning) {
       console.log(`[manager] Stopping program before removal: ${programId}`);
-      proc.kill('SIGTERM');
+      signalProcessTree(proc, 'SIGTERM');
     }
 
     // Remove from config
     config.programs.splice(programIndex, 1);
 
     // Backup existing config
-    if (fs.existsSync(CONFIG_FILE)) {
-      const backupFile = CONFIG_FILE + '.backup.' + Date.now();
-      fs.copyFileSync(CONFIG_FILE, backupFile);
-    }
+    backupConfigFile();
 
     // Save updated config
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
@@ -1153,6 +1429,9 @@ async function startServer() {
         console.log(`  http://${net.address}:${PORT}`);
       });
     });
+
+    // Launch any programs marked with autostart: true
+    launchAutostart(activeConfig);
   });
 
   // Graceful shutdown
@@ -1164,18 +1443,34 @@ async function startServer() {
       process.exit(0);
     });
 
-    // Kill all running child processes
+    // Kill all running child processes (whole group each, so nothing is orphaned)
     for (const [id, proc] of processes.entries()) {
       if (proc.isRunning) {
         console.log(`Stopping ${id}...`);
-        proc.kill('SIGTERM');
+        signalProcessTree(proc, 'SIGTERM');
       }
     }
   });
 }
 
-// Start the server
-startServer().catch(err => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+// Start the server only when run directly, so the module can be required for
+// testing without opening a listening socket.
+if (require.main === module) {
+  startServer().catch(err => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}
+
+// Exported for tests / external callers.
+module.exports = {
+  runRediscovery,
+  deriveRepoFolderName,
+  validateGitUrl,
+  cloneOrUpdateRepo,
+  scaffoldStartScript,
+  getLanIpAddress,
+  getPrimaryIpAddress,
+  generateProgramUrls,
+  rankLanInterface
+};

@@ -46,7 +46,7 @@ function resolveProgramUrl(rawUrl, program = {}) {
         url.protocol = currentProtocol === 'https:' ? 'https:' : url.protocol;
         url.hostname = currentHostname;
 
-        if (program.omitPortInUrl || (program.id === 'vosk-transcriber' && url.protocol === 'https:')) {
+        if (program.omitPortInUrl) {
           url.port = '';
         }
 
@@ -78,6 +78,21 @@ function resolveProgramUrl(rawUrl, program = {}) {
   const base = origin.replace(/\/+$/, '');
   const path = trimmed.replace(/^\/+/, '');
   return `${base}/${path}`;
+}
+
+// Choose which of a program's addresses the Open button should launch, based on
+// where the manager is being viewed from: over Tailscale -> the Tailscale URL,
+// on the LAN -> the Local URL. Falls back to the legacy single `url`.
+function pickBestUrl(program = {}) {
+  const list = Array.isArray(program.urls) ? program.urls : [];
+  if (list.length) {
+    const host = (window.location && window.location.hostname) || '';
+    const onTailscale = isTailscaleHostname(host) || host.startsWith('100.');
+    const prefer = onTailscale ? 'tailscale' : 'local';
+    const match = list.find(u => u.kind === prefer);
+    return (match || list[0]).url;
+  }
+  return resolveProgramUrl(program.url, program);
 }
 
 // DOM elements
@@ -316,7 +331,7 @@ function createProgramCard(program) {
   // Add click handler for Open button
   btnOpen.addEventListener('click', () => {
     const currentProgram = currentPrograms.find(p => p.id === program.id) || program;
-    const targetUrl = resolveProgramUrl(currentProgram.url, currentProgram);
+    const targetUrl = pickBestUrl(currentProgram);
     if (targetUrl) {
       window.open(targetUrl, '_blank');
     }
@@ -403,15 +418,47 @@ function updateProgramCard(card, program) {
     uptimeRow.classList.add('hidden');
   }
 
-  // Handle URL display
+  // Handle URL display — show every address the program is reachable at
+  // (Local LAN, Tailscale, …) so you can pick the one that works from where you
+  // are, instead of guessing a single URL. Falls back to the single resolved
+  // URL for older payloads that don't include the `urls` array.
   const urlRow = card.querySelector('.program-url-row');
-  const urlLink = card.querySelector('.program-url');
+  const urlContainer = card.querySelector('.program-urls');
+  const urlLabel = urlRow ? urlRow.querySelector('.label') : null;
   const btnOpen = card.querySelector('.btn-open');
 
-  if (resolvedUrl) {
+  const urlList = Array.isArray(program.urls) && program.urls.length
+    ? program.urls
+    : (resolvedUrl ? [{ label: '', url: resolvedUrl, kind: 'custom' }] : []);
+
+  urlContainer.innerHTML = '';
+
+  if (urlList.length) {
     urlRow.classList.remove('hidden');
-    urlLink.href = resolvedUrl;
-    urlLink.textContent = resolvedUrl;
+    if (urlLabel) urlLabel.textContent = urlList.length > 1 ? 'URLs:' : 'URL:';
+
+    urlList.forEach(entry => {
+      const item = document.createElement('span');
+      item.className = 'program-url-item';
+
+      if (entry.label) {
+        const tag = document.createElement('span');
+        tag.className = `url-tag url-tag-${entry.kind || 'default'}`;
+        tag.textContent = entry.label;
+        item.appendChild(tag);
+      }
+
+      const link = document.createElement('a');
+      link.href = entry.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.className = 'program-url';
+      link.textContent = entry.url;
+      item.appendChild(link);
+
+      urlContainer.appendChild(item);
+    });
+
     btnOpen.classList.remove('hidden');
   } else {
     urlRow.classList.add('hidden');
@@ -632,8 +679,9 @@ async function restartAll() {
 }
 
 async function rediscoverProjects() {
-  // Prompt for projects directory
-  const defaultPath = defaultBrowseDir || '/opt/http-server-manager/projects';
+  // Prompt for projects directory (defaults to the manager's PROJECTS_DIR,
+  // fetched from /api/config into defaultBrowseDir).
+  const defaultPath = defaultBrowseDir || '';
   const projectsDir = prompt(
     'Enter the path to your projects directory:\n\n' +
     'This will scan the directory for projects with Start.sh files\n' +
@@ -674,6 +722,79 @@ async function rediscoverProjects() {
   } catch (err) {
     console.error('Failed to call /api/rediscover:', err);
     showToast('Failed to trigger project rediscovery', 'error', 4000);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Import a program from a git repository
+// ---------------------------------------------------------------------------
+const importModal = document.getElementById('importModal');
+
+function openImportModal() {
+  const form = document.getElementById('importForm');
+  if (form) form.reset();
+  const status = document.getElementById('importStatus');
+  if (status) {
+    status.classList.add('hidden');
+    status.textContent = '';
+  }
+  importModal.classList.remove('hidden');
+  const urlInput = document.getElementById('importRepoUrl');
+  if (urlInput) setTimeout(() => urlInput.focus(), 0);
+}
+
+function closeImportModal() {
+  importModal.classList.add('hidden');
+}
+
+async function importRepo(e) {
+  e.preventDefault();
+
+  const repoUrl = document.getElementById('importRepoUrl').value.trim();
+  const branch = document.getElementById('importBranch').value.trim();
+  const name = document.getElementById('importName').value.trim();
+  const status = document.getElementById('importStatus');
+  const submitBtn = document.getElementById('importSubmit');
+
+  if (!repoUrl) {
+    showToast('❌ Please enter a repository URL', 'error');
+    return;
+  }
+
+  // Cloning can take a while — reflect that in the UI and prevent double submits.
+  submitBtn.disabled = true;
+  const originalLabel = submitBtn.textContent;
+  submitBtn.textContent = 'Importing…';
+  if (status) {
+    status.classList.remove('hidden');
+    status.textContent = `Cloning ${repoUrl}… this can take a moment.`;
+  }
+  showToast('Importing repository…', 'info', 3000);
+
+  try {
+    const response = await fetch('/api/import-repo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repoUrl, branch, name })
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      showToast(`✅ ${data.message}`, 'success', 6000);
+      closeImportModal();
+      // Program list refreshes automatically via WebSocket broadcast.
+    } else {
+      if (status) status.textContent = `❌ ${data.error}`;
+      showToast(`❌ Import failed: ${data.error}`, 'error', 6000);
+    }
+  } catch (err) {
+    console.error('Failed to call /api/import-repo:', err);
+    if (status) status.textContent = '❌ Failed to reach the manager.';
+    showToast('Failed to import repository', 'error', 4000);
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = originalLabel;
   }
 }
 
@@ -1008,6 +1129,18 @@ document.addEventListener('DOMContentLoaded', () => {
     btnRestartManager.addEventListener('click', restartManager);
   }
 
+  // Import-from-git modal
+  const btnImportRepo = document.getElementById('btnImportRepo');
+  if (btnImportRepo) {
+    btnImportRepo.addEventListener('click', openImportModal);
+    document.getElementById('importModalClose').addEventListener('click', closeImportModal);
+    document.getElementById('importCancel').addEventListener('click', closeImportModal);
+    document.getElementById('importForm').addEventListener('submit', importRepo);
+    importModal.addEventListener('click', (e) => {
+      if (e.target === importModal) closeImportModal();
+    });
+  }
+
   // Setup modal event listeners
   document.getElementById('btnAddProgram').addEventListener('click', () => openModal());
   document.getElementById('modalClose').addEventListener('click', closeModal);
@@ -1054,7 +1187,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', (e) => {
     // Escape: Close modal or clear search
     if (e.key === 'Escape') {
-      if (!programModal.classList.contains('hidden')) {
+      if (importModal && !importModal.classList.contains('hidden')) {
+        closeImportModal();
+      } else if (!programModal.classList.contains('hidden')) {
         closeModal();
       } else if (searchQuery) {
         searchInput.value = '';
