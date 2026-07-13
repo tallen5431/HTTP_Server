@@ -11,8 +11,10 @@ WorkingDirectory=/home/user/HTTP_Server
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="NODE_ENV=production"
 Environment="CONFIG_FILE=/home/user/HTTP_Server/config.json"
-Environment="PROJECTS_DIR=/home/user/HTTP_Server/projects"
 Environment="PORT=3000"
+# PROJECTS_DIR is intentionally unset here so it falls back to server.js's
+# default of <WorkingDirectory>/projects. Only set it explicitly if projects
+# should live outside this checkout.
 ExecStart=/usr/bin/node /home/user/HTTP_Server/server.js
 Restart=on-failure
 RestartSec=10s
