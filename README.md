@@ -333,6 +333,9 @@ You can configure the server using these environment variables:
   (only on a fully trusted network)
 - `MANAGER_ALLOW_EXTERNAL_PATHS`: Set to `1` to allow program paths outside
   `PROJECTS_DIR` (off by default as a safety guard)
+- `MANAGER_TRUST_PROXY`: Set to `1` only when the manager sits behind a trusted
+  reverse proxy, so `X-Forwarded-For` is used for the rate-limit client IP.
+  Leave unset otherwise (the header would be spoofable)
 - `MANAGER_LOG_DIR`: Where per-program logs are mirrored to disk (default: `logs/`)
 - `TAILSCALE_HOSTNAME` / `TS_CERT_DOMAIN`: Tailscale MagicDNS hostname for HTTPS
   program URLs when the `tailscale` CLI isn't available to the manager

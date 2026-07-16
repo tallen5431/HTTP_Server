@@ -30,6 +30,10 @@ const ALLOW_NO_AUTH = /^(1|true|yes)$/i.test(String(process.env.MANAGER_ALLOW_NO
 // a leaked token can't register /etc or /home as a "program" and run it). Set
 // MANAGER_ALLOW_EXTERNAL_PATHS=1 to allow programs outside the projects folder.
 const ALLOW_EXTERNAL_PATHS = /^(1|true|yes)$/i.test(String(process.env.MANAGER_ALLOW_EXTERNAL_PATHS || ''));
+// Only trust X-Forwarded-For (for client-IP / rate-limit keying) when explicitly
+// told we sit behind a proxy. Otherwise the header is attacker-controlled and
+// would let the brute-force throttle be both evaded and abused for lockout.
+const TRUST_PROXY = /^(1|true|yes)$/i.test(String(process.env.MANAGER_TRUST_PROXY || ''));
 const BIND_HOST = process.env.MANAGER_HOST ||
   ((API_TOKEN || ALLOW_NO_AUTH) ? '0.0.0.0' : '127.0.0.1');
 
@@ -754,8 +758,17 @@ const AUTH_BLOCK_MS = 5 * 60 * 1000;
 const authFailures = new Map(); // ip -> { count, first, blockedUntil }
 
 function clientIp(req) {
-  const fwd = req.headers && req.headers['x-forwarded-for'];
-  if (fwd) return String(Array.isArray(fwd) ? fwd[0] : fwd).split(',')[0].trim();
+  // X-Forwarded-For is honored only when MANAGER_TRUST_PROXY is set. When trusted,
+  // take the rightmost entry — the one appended by the closest (trusted) proxy —
+  // rather than the leftmost, which the client can spoof.
+  if (TRUST_PROXY) {
+    const fwd = req.headers && req.headers['x-forwarded-for'];
+    if (fwd) {
+      const parts = String(Array.isArray(fwd) ? fwd[0] : fwd)
+        .split(',').map(s => s.trim()).filter(Boolean);
+      if (parts.length) return parts[parts.length - 1];
+    }
+  }
   return (req.socket && req.socket.remoteAddress) || 'unknown';
 }
 
@@ -1077,6 +1090,12 @@ function startProgram(programId, config) {
   proc.spawnDate = Date.now();
 
   processes.set(programId, proc);
+
+  // Push the running-state transition to clients now. (We no longer broadcast on
+  // every log chunk, so without this the card would stay "stopped" until a port
+  // is detected in the logs or the ~5s health probe runs — and never, for a
+  // program with no detectable/configured port.)
+  scheduleBroadcast();
 
   return {
     id: programId,

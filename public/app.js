@@ -44,6 +44,7 @@ async function api(path, opts = {}) {
   const headers = authHeaders(opts.headers || {});
   const res = await fetch(path, { ...opts, headers });
   if (res.status === 401) {
+    stopAllLogPolling(); // otherwise open log panels keep re-triggering this 401
     openLoginModal(true);
     throw new Error('Unauthorized');
   }
@@ -62,16 +63,22 @@ async function api(path, opts = {}) {
 function openLoginModal(fromAuthFailure = false) {
   const modal = document.getElementById('loginModal');
   if (!modal) return;
+  const alreadyOpen = !modal.classList.contains('hidden');
   const err = document.getElementById('loginError');
   const rejected = fromAuthFailure && Boolean(apiToken);
   if (err) {
     err.textContent = rejected ? 'That token was rejected. Try again.' : '';
     err.classList.toggle('hidden', !rejected);
   }
-  const input = document.getElementById('loginToken');
-  if (input) input.value = apiToken || '';
   modal.classList.remove('hidden');
-  if (input) setTimeout(() => input.focus(), 0);
+  // If the modal is already open the user may be typing — don't clobber the field
+  // or steal focus (e.g. when a background request/poller hits another 401).
+  if (alreadyOpen) return;
+  const input = document.getElementById('loginToken');
+  if (input) {
+    input.value = apiToken || '';
+    setTimeout(() => input.focus(), 0);
+  }
 }
 
 function closeLoginModal() {
@@ -98,6 +105,7 @@ function submitLogin(e) {
 function logout() {
   setApiToken('');
   updateAuthUi();
+  stopAllLogPolling(); // stop tailers so they don't loop on 401 after sign-out
   if (ws) { try { ws.close(); } catch (_) { /* ignore */ } }
   showToast('Token cleared from this device', 'info', 2500);
   openLoginModal();
@@ -388,6 +396,7 @@ function updateProgramsDisplay(programs) {
   currentPrograms = programs;
 
   if (!programs || programs.length === 0) {
+    stopAllLogPolling(); // no programs left — don't leave tailers running
     programsGrid.classList.add('hidden');
     emptyState.classList.remove('hidden');
     noResults.classList.add('hidden');
@@ -414,6 +423,7 @@ function updateProgramsDisplay(programs) {
   existingCards.forEach(card => {
     const id = card.getAttribute('data-program-id');
     if (!programs.find(p => p.id === id)) {
+      stopLogPolling(card); // clear the tailer before detaching the card
       card.remove();
     }
   });
@@ -774,6 +784,9 @@ async function toggleLogs(id, card) {
 function startLogPolling(id, card) {
   stopLogPolling(card);
   card._logPoller = setInterval(async () => {
+    // Bail if the card was detached from the DOM (e.g. the program was deleted
+    // or vanished from config) so the interval and its requests don't leak.
+    if (!card.isConnected) { stopLogPolling(card); return; }
     const panel = card.querySelector('.program-logs');
     if (!panel || panel.classList.contains('hidden')) {
       stopLogPolling(card);
@@ -790,6 +803,10 @@ function stopLogPolling(card) {
     clearInterval(card._logPoller);
     card._logPoller = null;
   }
+}
+
+function stopAllLogPolling() {
+  document.querySelectorAll('.program-card').forEach(card => stopLogPolling(card));
 }
 
 // Toggle a program's autostart-on-boot flag from the card.
