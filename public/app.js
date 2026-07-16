@@ -4,6 +4,154 @@ let reconnectTimeout = null;
 let currentPrograms = [];
 let searchQuery = '';
 
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
+// When the manager has MANAGER_API_TOKEN set (required before any remote/Tailscale
+// exposure), every API call and the WebSocket must carry the token. We store it in
+// localStorage so it persists on this device, send it as an Authorization: Bearer
+// header on fetches, and smuggle it into the WebSocket via a subprotocol (browsers
+// can't set headers on a WebSocket). Without this the UI silently 401s the moment
+// a token is enabled.
+let apiToken = localStorage.getItem('managerToken') || '';
+let authEnabled = false; // learned from GET /api/health
+
+function setApiToken(token) {
+  apiToken = token || '';
+  if (apiToken) {
+    localStorage.setItem('managerToken', apiToken);
+  } else {
+    localStorage.removeItem('managerToken');
+  }
+}
+
+function authHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (apiToken) headers['Authorization'] = `Bearer ${apiToken}`;
+  return headers;
+}
+
+// base64url with no padding — safe to use as a WebSocket subprotocol token.
+function base64url(str) {
+  return btoa(unescape(encodeURIComponent(str)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+// Wrapper around fetch that injects auth and routes 401/429 to a helpful UX.
+async function api(path, opts = {}) {
+  const headers = authHeaders(opts.headers || {});
+  const res = await fetch(path, { ...opts, headers });
+  if (res.status === 401) {
+    openLoginModal(true);
+    throw new Error('Unauthorized');
+  }
+  if (res.status === 429) {
+    showToast('Too many attempts — wait a minute and try again.', 'error');
+    throw new Error('Rate limited');
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// Login modal — enter the API token from the UI (persisted to this device).
+// Shown automatically when the server reports auth is enabled and we have no
+// token, or when a request/WebSocket is rejected.
+// ---------------------------------------------------------------------------
+function openLoginModal(fromAuthFailure = false) {
+  const modal = document.getElementById('loginModal');
+  if (!modal) return;
+  const err = document.getElementById('loginError');
+  const rejected = fromAuthFailure && Boolean(apiToken);
+  if (err) {
+    err.textContent = rejected ? 'That token was rejected. Try again.' : '';
+    err.classList.toggle('hidden', !rejected);
+  }
+  const input = document.getElementById('loginToken');
+  if (input) input.value = apiToken || '';
+  modal.classList.remove('hidden');
+  if (input) setTimeout(() => input.focus(), 0);
+}
+
+function closeLoginModal() {
+  const modal = document.getElementById('loginModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function submitLogin(e) {
+  if (e) e.preventDefault();
+  const input = document.getElementById('loginToken');
+  const token = input ? input.value.trim() : '';
+  if (!token) return;
+  setApiToken(token);
+  closeLoginModal();
+  updateAuthUi();
+  // Reconnect the WebSocket and refetch everything with the new token.
+  if (ws) { try { ws.close(); } catch (_) { /* ignore */ } }
+  connectWebSocket();
+  fetchPrograms();
+  fetchDefaultBrowseDir();
+  showToast('Signed in on this device', 'success', 2500);
+}
+
+function logout() {
+  setApiToken('');
+  updateAuthUi();
+  if (ws) { try { ws.close(); } catch (_) { /* ignore */ } }
+  showToast('Token cleared from this device', 'info', 2500);
+  openLoginModal();
+}
+
+// Show/hide the Sign-out button depending on whether we're authenticated.
+function updateAuthUi() {
+  const btnLogout = document.getElementById('btnLogout');
+  if (btnLogout) btnLogout.classList.toggle('hidden', !(authEnabled && apiToken));
+}
+
+// Show whether the manager is being viewed over the LAN or Tailscale, so it's
+// obvious which network you're on while managing remotely.
+function updateConnectionIndicator() {
+  const el = document.getElementById('connIndicator');
+  if (!el) return;
+  const host = (window.location && window.location.hostname) || '';
+  let label;
+  if (isTailscaleHostname(host) || host.startsWith('100.')) {
+    label = 'Tailscale';
+  } else if (host === 'localhost' || host === '127.0.0.1') {
+    label = 'This device';
+  } else {
+    label = 'LAN';
+  }
+  el.textContent = label;
+  el.className = 'conn-indicator conn-' + label.toLowerCase().replace(/\s+/g, '-');
+  el.classList.remove('hidden');
+}
+
+// Boot sequence: learn whether auth is required (via the open /api/health), then
+// either prompt for the token or load everything.
+async function init() {
+  try {
+    const res = await fetch('/api/health');
+    const health = await res.json();
+    authEnabled = Boolean(health.authEnabled);
+  } catch (_) {
+    // Health unreachable — assume no auth and let normal error handling run.
+  }
+
+  updateConnectionIndicator();
+  updateAuthUi();
+
+  if (authEnabled && !apiToken) {
+    openLoginModal();
+    return; // wait for sign-in before connecting
+  }
+
+  fetchDefaultBrowseDir();
+  fetchPrograms();
+  connectWebSocket();
+}
+
 // Resolve a program URL against the current browser origin.
 //
 // Supports:
@@ -168,13 +316,23 @@ function connectWebSocket() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}`;
 
-  ws = new WebSocket(wsUrl);
+  // Always offer 'manager'; add the auth subprotocol when we hold a token.
+  const protocols = ['manager'];
+  if (apiToken) protocols.push('bearer.' + base64url(apiToken));
+
+  try {
+    ws = new WebSocket(wsUrl, protocols);
+  } catch (err) {
+    console.error('WebSocket construction failed:', err);
+    return;
+  }
 
   ws.onopen = () => {
     console.log('WebSocket connected');
     wsStatus.classList.add('connected');
     wsStatus.classList.remove('disconnected');
     wsStatusText.textContent = 'Connected';
+    updateConnectionIndicator();
 
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout);
@@ -194,11 +352,18 @@ function connectWebSocket() {
     console.error('WebSocket error:', error);
   };
 
-  ws.onclose = () => {
-    console.log('WebSocket disconnected');
+  ws.onclose = (event) => {
+    console.log('WebSocket disconnected', event && event.code);
     wsStatus.classList.remove('connected');
     wsStatus.classList.add('disconnected');
     wsStatusText.textContent = 'Disconnected';
+
+    // 1008 = policy violation = auth rejected. Prompt for the token rather than
+    // reconnecting in a loop with the same bad credential.
+    if (event && event.code === 1008) {
+      openLoginModal(true);
+      return;
+    }
 
     // Attempt to reconnect after 3 seconds
     reconnectTimeout = setTimeout(connectWebSocket, 3000);
@@ -208,10 +373,11 @@ function connectWebSocket() {
 // Fetch programs from API
 async function fetchPrograms() {
   try {
-    const response = await fetch('/api/programs');
+    const response = await api('/api/programs');
     const programs = await response.json();
     updateProgramsDisplay(programs);
   } catch (error) {
+    if (error.message === 'Unauthorized') return; // login modal already shown
     console.error('Error fetching programs:', error);
     showToast('Failed to fetch programs', 'error');
   }
@@ -343,7 +509,7 @@ function createProgramCard(program) {
     const currentProgram = currentPrograms.find(p => p.id === program.id);
     if (currentProgram) {
       // Fetch full config to get env vars
-      fetch('/api/config')
+      api('/api/config')
         .then(res => res.json())
         .then(config => {
           const fullProgram = config.programs.find(p => p.id === program.id);
@@ -378,7 +544,16 @@ function createProgramCard(program) {
   const btnCloseLogs = card.querySelector('.btn-close-logs');
   btnCloseLogs.addEventListener('click', () => {
     card.querySelector('.program-logs').classList.add('hidden');
+    stopLogPolling(card);
   });
+
+  // Autostart toggle — writes the boolean via the existing PUT endpoint.
+  const autostartToggle = card.querySelector('.autostart-toggle');
+  if (autostartToggle) {
+    autostartToggle.addEventListener('change', () => {
+      setAutostart(program.id, autostartToggle.checked, autostartToggle);
+    });
+  }
 
   updateProgramCard(card, program);
 
@@ -466,8 +641,27 @@ function updateProgramCard(card, program) {
   }
 
   const statusBadge = card.querySelector('.program-status');
-  statusBadge.textContent = program.status;
-  statusBadge.className = `program-status badge ${program.status}`;
+  const health = program.health || program.status;
+  const badgeText = {
+    listening: '● listening',
+    starting: '○ starting…',
+    running: '● running',
+    crashed: program.exitCode != null ? `✕ crashed (${program.exitCode})` : '✕ crashed',
+    stopped: '■ stopped'
+  }[health] || program.status;
+  statusBadge.textContent = badgeText;
+  statusBadge.className = `program-status badge ${health}`;
+  statusBadge.title = {
+    listening: 'Process running and its port is accepting connections',
+    starting: 'Process running but its port is not responding yet',
+    running: 'Process running (no port detected to health-check)',
+    crashed: 'Exited unexpectedly — see logs',
+    stopped: 'Not running'
+  }[health] || '';
+
+  // Autostart toggle reflects server state.
+  const autostartToggle = card.querySelector('.autostart-toggle');
+  if (autostartToggle) autostartToggle.checked = Boolean(program.autostart);
 
   const btnStart = card.querySelector('.btn-start');
   const btnStop = card.querySelector('.btn-stop');
@@ -499,7 +693,7 @@ async function startProgram(id, button) {
   if (button) setButtonLoading(button, true);
 
   try {
-    const response = await fetch(`/api/programs/${id}/start`, {
+    const response = await api(`/api/programs/${id}/start`, {
       method: 'POST'
     });
     const result = await response.json();
@@ -521,7 +715,7 @@ async function stopProgram(id, button) {
   if (button) setButtonLoading(button, true);
 
   try {
-    const response = await fetch(`/api/programs/${id}/stop`, {
+    const response = await api(`/api/programs/${id}/stop`, {
       method: 'POST'
     });
     const result = await response.json();
@@ -543,7 +737,7 @@ async function restartProgram(id, button) {
   if (button) setButtonLoading(button, true);
 
   try {
-    const response = await fetch(`/api/programs/${id}/restart`, {
+    const response = await api(`/api/programs/${id}/restart`, {
       method: 'POST'
     });
     const result = await response.json();
@@ -563,22 +757,67 @@ async function restartProgram(id, button) {
 
 async function toggleLogs(id, card) {
   const logsContainer = card.querySelector('.program-logs');
-  const logsContent = card.querySelector('.logs-content');
 
   if (!logsContainer.classList.contains('hidden')) {
     logsContainer.classList.add('hidden');
+    stopLogPolling(card);
     return;
   }
 
   await loadLogs(id, card);
   logsContainer.classList.remove('hidden');
+  // Live-tail while the panel is open so remote debugging doesn't need manual
+  // refreshes (logs still stream to disk server-side).
+  startLogPolling(id, card);
+}
+
+function startLogPolling(id, card) {
+  stopLogPolling(card);
+  card._logPoller = setInterval(async () => {
+    const panel = card.querySelector('.program-logs');
+    if (!panel || panel.classList.contains('hidden')) {
+      stopLogPolling(card);
+      return;
+    }
+    await loadLogs(id, card);
+    const searchInput = card.querySelector('.log-search');
+    if (searchInput && searchInput.value) filterLogs(card, searchInput.value);
+  }, 2500);
+}
+
+function stopLogPolling(card) {
+  if (card._logPoller) {
+    clearInterval(card._logPoller);
+    card._logPoller = null;
+  }
+}
+
+// Toggle a program's autostart-on-boot flag from the card.
+async function setAutostart(id, enabled, toggleEl) {
+  try {
+    const res = await api(`/api/programs/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ autostart: enabled })
+    });
+    const result = await res.json();
+    if (result.success) {
+      showToast(`Autostart ${enabled ? 'enabled' : 'disabled'} for ${id}`, 'success', 2000);
+    } else {
+      showToast(`Failed: ${result.error}`, 'error');
+      if (toggleEl) toggleEl.checked = !enabled;
+    }
+  } catch (err) {
+    if (err.message !== 'Unauthorized') showToast('Failed to update autostart', 'error');
+    if (toggleEl) toggleEl.checked = !enabled;
+  }
 }
 
 async function loadLogs(id, card) {
   const logsContent = card.querySelector('.logs-content');
 
   try {
-    const response = await fetch(`/api/programs/${id}/logs?lines=100`);
+    const response = await api(`/api/programs/${id}/logs?lines=100`);
     const logs = await response.json();
 
     if (logs.length === 0) {
@@ -705,7 +944,7 @@ async function rediscoverProjects() {
   showToast('Rediscovering projects…', 'info', 3000);
 
   try {
-    const response = await fetch('/api/rediscover', {
+    const response = await api('/api/rediscover', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectsDir: trimmedPath })
@@ -772,7 +1011,7 @@ async function importRepo(e) {
   showToast('Importing repository…', 'info', 3000);
 
   try {
-    const response = await fetch('/api/import-repo', {
+    const response = await api('/api/import-repo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoUrl, branch, name })
@@ -806,7 +1045,7 @@ async function restartManager() {
   showToast('Restarting HTTP Server Manager…', 'info', 3000);
 
   try {
-    const response = await fetch('/api/restart-manager', {
+    const response = await api('/api/restart-manager', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason: 'user-request' })
@@ -881,12 +1120,31 @@ function addEnvVarRow(key = '', value = '') {
   const row = document.createElement('div');
   row.className = 'env-var-row';
 
-  row.innerHTML = `
-    <input type="text" class="env-key" placeholder="KEY" value="${key}" pattern="[A-Z_][A-Z0-9_]*" title="Uppercase letters, numbers, and underscores">
-    <input type="text" class="env-value" placeholder="value" value="${value}">
-    <button type="button" class="btn-remove-env" onclick="this.parentElement.remove()">✕</button>
-  `;
+  // Build with DOM APIs (not innerHTML) so env values can't inject markup and so
+  // there's no inline onclick handler for the Content-Security-Policy to block.
+  const keyInput = document.createElement('input');
+  keyInput.type = 'text';
+  keyInput.className = 'env-key';
+  keyInput.placeholder = 'KEY';
+  keyInput.value = key;
+  keyInput.pattern = '[A-Z_][A-Z0-9_]*';
+  keyInput.title = 'Uppercase letters, numbers, and underscores';
 
+  const valueInput = document.createElement('input');
+  valueInput.type = 'text';
+  valueInput.className = 'env-value';
+  valueInput.placeholder = 'value';
+  valueInput.value = value;
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'btn-remove-env';
+  removeBtn.textContent = '✕';
+  removeBtn.addEventListener('click', () => row.remove());
+
+  row.appendChild(keyInput);
+  row.appendChild(valueInput);
+  row.appendChild(removeBtn);
   envVarsContainer.appendChild(row);
 }
 
@@ -924,14 +1182,14 @@ async function saveProgram(e) {
     let response;
     if (editingProgram) {
       // Update existing program
-      response = await fetch(`/api/programs/${id}`, {
+      response = await api(`/api/programs/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(programData)
       });
     } else {
       // Add new program
-      response = await fetch('/api/programs', {
+      response = await api('/api/programs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(programData)
@@ -959,7 +1217,7 @@ async function deleteProgram(id, programName) {
   }
 
   try {
-    const response = await fetch(`/api/programs/${id}`, {
+    const response = await api(`/api/programs/${id}`, {
       method: 'DELETE'
     });
 
@@ -983,7 +1241,7 @@ let defaultBrowseDir = '';
 
 async function fetchDefaultBrowseDir() {
   try {
-    const res = await fetch('/api/config');
+    const res = await api('/api/config');
     const data = await res.json();
     if (data.projectsDir) {
       defaultBrowseDir = data.projectsDir;
@@ -1010,7 +1268,7 @@ async function scanBrowseDir() {
   list.innerHTML = '<div class="browser-scanning">Scanning…</div>';
 
   try {
-    const res = await fetch('/api/browse-projects?dir=' + encodeURIComponent(dir));
+    const res = await api('/api/browse-projects?dir=' + encodeURIComponent(dir));
     const data = await res.json();
 
     if (!data.success) {
@@ -1112,7 +1370,11 @@ function toggleProjectBrowser() {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
-  fetchDefaultBrowseDir();
+  // Login modal wiring
+  const loginForm = document.getElementById('loginForm');
+  if (loginForm) loginForm.addEventListener('submit', submitLogin);
+  const btnLogout = document.getElementById('btnLogout');
+  if (btnLogout) btnLogout.addEventListener('click', logout);
 
   // Setup bulk action buttons
   document.getElementById('btnStartAll').addEventListener('click', startAll);
@@ -1215,8 +1477,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  fetchPrograms();
-  connectWebSocket();
+  init();
 
   // Periodically update uptime displays
   setInterval(() => {

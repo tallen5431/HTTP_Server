@@ -31,13 +31,19 @@ const DRY_RUN = process.argv.includes('--dry-run');
 function parseStartScript(scriptPath) {
   try {
     const content = fs.readFileSync(scriptPath, 'utf8');
+    // Ignore full-line comments so a commented-out `# export PORT=9999` example
+    // isn't mistaken for the real port.
+    const code = content
+      .split('\n')
+      .filter(line => !/^\s*#/.test(line))
+      .join('\n');
     const env = {};
     let hasFlask = false;
     let hasExpress = false;
     let hasStreamlit = false;
 
     // Detect framework/type
-    if (content.includes('flask') || content.includes('python') && content.includes('app.py')) {
+    if (content.includes('flask') || (content.includes('python') && content.includes('app.py'))) {
       hasFlask = true;
     }
     if (content.includes('node') || content.includes('npm') || content.includes('yarn')) {
@@ -49,6 +55,10 @@ function parseStartScript(scriptPath) {
 
     // Extract PORT from various patterns
     const portPatterns = [
+      // `export PORT="${PORT:-8080}"` — the default-value form the manager's own
+      // scaffolded Start.sh scripts use; capture the fallback so imported programs
+      // get a URL. (Must come first so it wins over the looser patterns below.)
+      /\bPORT\s*=\s*["']?\$\{[^}]*:-\s*(\d{2,5})/i,
       /PORT[=\s]+["']?(\d+)["']?/i,
       /--port[=\s]+["']?(\d+)["']?/i,
       /--bind[=\s]+["']?[^\s"']*?:(\d+)["']?/i, // gunicorn/uvicorn --bind host:port
@@ -58,22 +68,22 @@ function parseStartScript(scriptPath) {
     ];
 
     for (const pattern of portPatterns) {
-      const match = content.match(pattern);
+      const match = code.match(pattern);
       if (match && match[1]) {
         env.PORT = match[1];
         break;
       }
     }
 
-    // Extract HOST
+    // Extract HOST — accept a hostname too, not just a numeric IP.
     const hostPatterns = [
-      /HOST[=\s]+["']?([0-9.]+)["']?/i,
-      /--host[=\s]+["']?([0-9.]+)["']?/i,
-      /-h[=\s]+["']?([0-9.]+)["']?/i
+      /HOST[=\s]+["']?([A-Za-z0-9._-]+)["']?/i,
+      /--host[=\s]+["']?([A-Za-z0-9._-]+)["']?/i,
+      /-h[=\s]+["']?([A-Za-z0-9._-]+)["']?/i
     ];
 
     for (const pattern of hostPatterns) {
-      const match = content.match(pattern);
+      const match = code.match(pattern);
       if (match && match[1]) {
         env.HOST = match[1];
         break;
@@ -83,7 +93,7 @@ function parseStartScript(scriptPath) {
     // Extract other environment variables
     const envVarPattern = /export\s+([A-Z_][A-Z0-9_]*)[=\s]+["']?([^"'\n]+)["']?/gi;
     let match;
-    while ((match = envVarPattern.exec(content)) !== null) {
+    while ((match = envVarPattern.exec(code)) !== null) {
       const [, key, value] = match;
       // Skip PATH, HOME, and keys already set (PORT, HOST)
       // Also skip variable references like $HOST, $PORT, ${VAR}
@@ -194,9 +204,11 @@ function generateDisplayName(projectPath, metadata) {
  * Discover all projects in a directory
  */
 function discoverProjects(projectsDir) {
+  // Throw rather than process.exit — this module is required by the long-running
+  // server (runRediscovery / auto-discovery), and exiting here would take the
+  // whole manager (and its process tracking) down. The CLI main() catches it.
   if (!fs.existsSync(projectsDir)) {
-    console.error(`Error: Directory not found: ${projectsDir}`);
-    process.exit(1);
+    throw new Error(`Directory not found: ${projectsDir}`);
   }
 
   const projects = [];
@@ -279,7 +291,13 @@ function main() {
   const absoluteProjectsDir = path.resolve(PROJECTS_DIR);
   console.log(`Scanning directory: ${absoluteProjectsDir}\n`);
 
-  const projects = discoverProjects(absoluteProjectsDir);
+  let projects;
+  try {
+    projects = discoverProjects(absoluteProjectsDir);
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
 
   console.log(`\n📊 Discovery Summary:`);
   console.log(`  Total projects found: ${projects.length}`);

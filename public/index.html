@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HTTP Server Manager</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%96%A5%EF%B8%8F%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,8 +13,10 @@
       <div class="header-content">
         <h1>HTTP Server Manager</h1>
         <div class="connection-status">
+          <span class="conn-indicator hidden" id="connIndicator" title="Which network you're viewing the manager over"></span>
           <span class="status-indicator" id="wsStatus"></span>
           <span id="wsStatusText">Connecting...</span>
+          <button class="btn btn-secondary btn-sm hidden" id="btnLogout" title="Clear the saved token from this device">Sign out</button>
         </div>
       </div>
       <div class="bulk-actions" id="bulkActions">
@@ -105,6 +108,15 @@
         <div class="info-row program-uptime-row hidden">
           <span class="label">Uptime:</span>
           <span class="value program-uptime"></span>
+        </div>
+        <div class="info-row program-autostart-row">
+          <span class="label">Autostart:</span>
+          <span class="value">
+            <label class="switch" title="Start this program automatically when the manager starts">
+              <input type="checkbox" class="autostart-toggle">
+              <span class="slider"></span>
+            </label>
+          </span>
         </div>
       </div>
       <div class="program-actions">
@@ -248,6 +260,28 @@
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" id="importCancel">Cancel</button>
             <button type="submit" class="btn btn-success" id="importSubmit">Import</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Login Modal -->
+  <div class="modal hidden" id="loginModal">
+    <div class="modal-content modal-sm">
+      <div class="modal-header">
+        <h2>Sign in</h2>
+      </div>
+      <div class="modal-body">
+        <p class="login-intro">This manager is protected by an access token. Enter it to manage your programs — it's stored on this device only.</p>
+        <form id="loginForm">
+          <div class="form-group">
+            <label for="loginToken">Access token</label>
+            <input type="password" id="loginToken" class="form-input" autocomplete="current-password" required>
+            <div class="login-error hidden" id="loginError"></div>
+          </div>
+          <div class="modal-actions">
+            <button type="submit" class="btn btn-success" id="loginSubmit">Sign in</button>
           </div>
         </form>
       </div>

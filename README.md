@@ -14,6 +14,11 @@ A simple, self-configuring HTTP server manager that automatically detects your n
 - **🌐 Multi-program Support**: Manage multiple applications from a single interface
 - **🧠 Framework Detection**: Intelligently detects Flask, Django, FastAPI, Node.js, Streamlit and configures accordingly
 - **📥 Import from Git**: Clone any repository straight into your projects folder from the web UI
+- **🔐 Token Login**: Optional access token with an in-UI sign-in (stored per device) — required before exposing the manager beyond your machine
+- **🌍 Remote Access**: Tailscale-aware URLs so you can manage the server and reach your programs from anywhere, privately
+- **❤️ Health Checks**: Live TCP port probing shows *listening* vs *running-but-not-serving* vs *crashed (exit code)* — not just "process alive"
+- **⏻ Autostart Toggle**: Flip autostart-on-boot per program right from its card
+- **🗂️ Persistent Logs**: Program output is mirrored to disk, so history survives a manager restart
 
 ## Prerequisites
 
@@ -82,6 +87,79 @@ npm start
 The server will start on port 3000 by default. Access the web interface at:
 - `http://localhost:3000` (local)
 - `http://YOUR_IP:3000` (from other devices on your network)
+
+> **Heads-up on remote use:** this manager can start programs and clone-and-run
+> git repos, so reaching it over a network is effectively remote command access
+> to this machine. By default, **if no access token is set the manager binds to
+> `127.0.0.1` only** (local access), so it is never exposed unauthenticated.
+> Setting `MANAGER_API_TOKEN` enables binding on all interfaces. See
+> [Security](#security) and [Remote Access](#remote-access-manage-from-anywhere).
+
+## Security
+
+Read this before exposing the manager beyond your own machine.
+
+1. **Set an access token.** Export `MANAGER_API_TOKEN` (e.g. `openssl rand -hex 32`).
+   Every API request and the WebSocket then require it. The web UI shows a
+   **Sign in** screen the first time and stores the token on that device. Without
+   a token, the manager binds to loopback only and refuses remote connections.
+2. **Don't run it as root.** The shipped `systemd` unit runs as a non-root user.
+   Because the manager launches arbitrary programs and clones/runs repos, running
+   as root turns any of that into full host compromise.
+3. **Prefer a private network over a public port.** Tailscale (recommended),
+   WireGuard, or a VPN keep the manager off the public internet entirely. If you
+   must publish it, put an authenticating reverse proxy / Cloudflare Access in
+   front — never port-forward `:3000` directly.
+4. **Programs stay inside your projects folder.** Adding/updating a program with a
+   `path` outside `PROJECTS_DIR` is rejected (override with
+   `MANAGER_ALLOW_EXTERNAL_PATHS=1` only if you trust every caller).
+
+What the app does for you: token auth on **all** endpoints (reads included) and
+the WebSocket, constant-time token comparison, no token in query strings, a
+brute-force throttle on failed auth, basic security headers, and a loud startup
+banner telling you exactly what's exposed.
+
+## Remote Access (manage from anywhere)
+
+The goal — reach the manager (and your programs) from your phone or laptop while
+away from home — without publishing a root-capable control panel to the internet.
+
+### Recommended: Tailscale
+
+Tailscale puts your devices on a private WireGuard network (a "tailnet"). Nothing
+is exposed publicly; only your own authorized devices can connect. This code is
+already Tailscale-aware, so program cards render correct `*.ts.net` URLs.
+
+1. Install Tailscale on the server and sign in:
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh
+   sudo tailscale up
+   ```
+2. Install the Tailscale app on your phone/laptop and sign in to the same account.
+3. Set a token and start the manager (see [Security](#security)); it will bind on
+   all interfaces so the tailnet can reach it.
+4. From anywhere, open `http://<your-server>.<your-tailnet>.ts.net:3000`, enter
+   your token once, and manage everything.
+
+For a clean HTTPS name with no port and no cert wrangling, use Tailscale Serve:
+```bash
+sudo tailscale serve --bg 3000        # serves the manager at https://<host>.<tailnet>.ts.net
+```
+You can also give a program an HTTPS Tailscale URL with `preferTailscale` /
+`omitPortInUrl` (see [Programs](#programs)).
+
+### Other options
+
+- **Cloudflare Tunnel + Access** — reach a custom `https://` domain with browser
+  SSO/MFA at the edge. Good if you want a public URL, but **only safe with an
+  Access policy in front** (the tunnel itself is public).
+- **WireGuard (self-hosted VPN)** — like Tailscale but fully self-hosted; more
+  manual to set up and add devices.
+- **Reverse proxy + port-forward** — weakest option here and easiest to get
+  wrong; only with full app auth *and* proxy-level auth (basic-auth/mTLS) on top.
+
+Whichever transport you pick, still set a token — a single compromised device on
+your private network should not inherit command access to this machine.
 
 ## Configuration
 
@@ -205,25 +283,34 @@ To have the HTTP Server Manager itself start automatically after a system reboot
    sudo cp http-server-manager.service /etc/systemd/system/
    ```
 
-2. **Edit paths if needed** (if your installation is in a different location):
+2. **Edit paths and the user if needed:**
    ```bash
    sudo nano /etc/systemd/system/http-server-manager.service
-   # Update WorkingDirectory and ExecStart paths to match your setup
+   # Update WorkingDirectory/ExecStart paths and User=/Group= to match your setup.
+   # The unit runs as a NON-ROOT user on purpose — do not change it to root.
    ```
 
-3. **Enable and start the service:**
+3. **Set the access token** (required for remote use) via the environment file:
+   ```bash
+   sudo install -m600 http-server-manager.env.example /etc/http-server-manager.env
+   sudo nano /etc/http-server-manager.env   # set MANAGER_API_TOKEN
+   ```
+   The unit already loads this file (`EnvironmentFile=-/etc/http-server-manager.env`),
+   so the secret stays out of the world-readable unit.
+
+4. **Enable and start the service:**
    ```bash
    sudo systemctl daemon-reload
    sudo systemctl enable http-server-manager
    sudo systemctl start http-server-manager
    ```
 
-4. **Check status:**
+5. **Check status:**
    ```bash
    sudo systemctl status http-server-manager
    ```
 
-5. **View logs:**
+6. **View logs:**
    ```bash
    sudo journalctl -u http-server-manager -f
    ```
@@ -236,12 +323,23 @@ You can configure the server using these environment variables:
 
 - `PORT`: Server port (default: 3000)
 - `CONFIG_FILE`: Path to config file (default: ./config.json)
-- `PROJECTS_DIR`: Auto-discover projects from this directory
-- `MANAGER_API_TOKEN`: Optional API token for authentication
+- `PROJECTS_DIR`: Auto-discover projects from this directory (default: `projects/` next to the install)
+- `MANAGER_API_TOKEN`: Access token for authentication. **When unset, the manager
+  binds to `127.0.0.1` only** (local-only, fail-closed). Set it to enable auth and
+  remote access.
+- `MANAGER_HOST`: Explicit bind address (overrides the token-based default; e.g.
+  set to your Tailscale `100.x.y.z` to listen on Tailscale only)
+- `MANAGER_ALLOW_NO_AUTH`: Set to `1` to bind on all interfaces **without** a token
+  (only on a fully trusted network)
+- `MANAGER_ALLOW_EXTERNAL_PATHS`: Set to `1` to allow program paths outside
+  `PROJECTS_DIR` (off by default as a safety guard)
+- `MANAGER_LOG_DIR`: Where per-program logs are mirrored to disk (default: `logs/`)
+- `TAILSCALE_HOSTNAME` / `TS_CERT_DOMAIN`: Tailscale MagicDNS hostname for HTTPS
+  program URLs when the `tailscale` CLI isn't available to the manager
 
 Example:
 ```bash
-PORT=4000 CONFIG_FILE=./my-config.json npm start
+PORT=4000 MANAGER_API_TOKEN="$(openssl rand -hex 32)" npm start
 ```
 
 ## Project Structure
@@ -287,19 +385,23 @@ is bundled into this repository — your projects and their data live under
 
 ## API Endpoints
 
-The manager provides a REST API:
+The manager provides a REST API. **When `MANAGER_API_TOKEN` is set, every
+endpoint below requires the `Authorization: Bearer` header** — only
+`GET /api/health` stays open. `GET /api/programs` also returns each program's
+`health` (`listening` / `starting` / `running` / `crashed` / `stopped`),
+`reachable`, `exitCode`, and `autostart`.
 
 **Program Control:**
 - `GET /api/programs` - List all programs and their status
 - `POST /api/programs/:id/start` - Start a program
 - `POST /api/programs/:id/stop` - Stop a program
-- `POST /api/programs/:id/restart` - Restart a program
+- `POST /api/programs/:id/restart` - Restart a program (waits for the real exit, then starts)
 - `GET /api/programs/:id/logs` - Get program logs
 
 **Program Management:**
-- `POST /api/programs` - Add a new program (requires auth)
-- `PUT /api/programs/:id` - Update a program (requires auth)
-- `DELETE /api/programs/:id` - Remove a program (requires auth)
+- `POST /api/programs` - Add a new program
+- `PUT /api/programs/:id` - Update a program (name, path, url, env, `autostart`)
+- `DELETE /api/programs/:id` - Remove a program
 
 **Configuration:**
 - `GET /api/config` - Get current configuration
@@ -313,16 +415,23 @@ The manager provides a REST API:
 
 ### Authentication
 
-If you set `MANAGER_API_TOKEN`, write operations require authentication:
+If you set `MANAGER_API_TOKEN`, **every** API endpoint (reads included) and the
+WebSocket require the token.
+
+- **In the web UI:** a **Sign in** screen appears; enter the token once and it's
+  stored on that device (localStorage). A **Sign out** button clears it.
+- **For API clients:** send the token in the `Authorization` header. (The
+  query-string `?token=` form was removed — query strings leak into logs and
+  browser history.)
 
 ```bash
-# Using Authorization header
 curl -H "Authorization: Bearer YOUR_TOKEN" \
   -X POST http://localhost:3000/api/programs/my-app/start
-
-# Using query parameter
-curl -X POST "http://localhost:3000/api/programs/my-app/start?token=YOUR_TOKEN"
 ```
+
+The token is compared in constant time, and repeated auth failures from one IP
+are throttled. `GET /api/health` stays open (no token) so uptime monitors can
+poll liveness; it reports `authEnabled` so the UI knows to prompt.
 
 ## Web Interface Features
 
@@ -417,9 +526,15 @@ The Open button only appears when a program has a valid URL. To see Open buttons
 
 ### Can't access from other devices?
 
-1. Check your firewall settings - port 3000 needs to be accessible
-2. Verify the server is listening on all interfaces (0.0.0.0)
-3. Use the IP address shown in the console output when starting the manager
+1. **Set `MANAGER_API_TOKEN`.** With no token the manager binds to `127.0.0.1`
+   only (by design), so it's unreachable from other devices until you set one.
+   The startup banner tells you exactly what's exposed.
+2. Check your firewall settings - port 3000 needs to be accessible
+3. Verify the server is listening on all interfaces — the banner shows the bind
+   address (`0.0.0.0:3000` once a token is set)
+4. For access away from home, use Tailscale — see
+   [Remote Access](#remote-access-manage-from-anywhere)
+5. Use the IP address shown in the console output when starting the manager
 
 ### WebSocket disconnecting?
 
@@ -434,6 +549,17 @@ To run in development mode:
 ```bash
 npm run dev
 ```
+
+To run the test suite (uses the built-in `node:test` runner — no extra deps):
+
+```bash
+npm test
+```
+
+The tests cover the security- and correctness-critical helpers: git-URL
+validation, repo-folder sanitizing, the projects-folder path guard, port
+detection (including the "don't latch onto a logged dependency address" case),
+and `Start.sh` parsing (including the `${PORT:-8080}` default form).
 
 ## License
 

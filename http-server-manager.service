@@ -6,23 +6,51 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+
+# Run as a NON-ROOT user. This manager launches arbitrary programs and clones and
+# runs git repos, so running it as root turns any of that into full host
+# compromise. Point these at the (unprivileged) account that owns the checkout;
+# a dedicated `httpmanager` user that only owns this directory is even better.
+User=user
+Group=user
+
 WorkingDirectory=/home/user/HTTP_Server
-Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="NODE_ENV=production"
 Environment="CONFIG_FILE=/home/user/HTTP_Server/config.json"
 Environment="PORT=3000"
 # PROJECTS_DIR is intentionally unset here so it falls back to server.js's
 # default of <WorkingDirectory>/projects. Only set it explicitly if projects
 # should live outside this checkout.
+
+# Put the access token (and any other secrets) in this file — NOT in this unit,
+# which may be world-readable. Create it from the shipped example:
+#   sudo install -m600 http-server-manager.env.example /etc/http-server-manager.env
+#   sudo nano /etc/http-server-manager.env   # set MANAGER_API_TOKEN
+# The leading '-' makes it optional so the manager still starts (loopback-only)
+# if the file is absent.
+EnvironmentFile=-/etc/http-server-manager.env
+
 ExecStart=/usr/bin/node /home/user/HTTP_Server/server.js
 Restart=on-failure
 RestartSec=10s
 
-# Graceful shutdown
-KillMode=process
+# Graceful shutdown: SIGINT triggers the manager's handler, which signals every
+# child process group so nothing is orphaned; KillMode=mixed then SIGKILLs the
+# whole cgroup after the timeout as a backstop.
+KillMode=mixed
 KillSignal=SIGINT
 TimeoutStopSec=30s
+
+# Hardening (conservative so it doesn't break the varied programs you launch).
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# For stronger isolation (may need tuning if a launched program writes outside
+# the checkout), consider: ProtectSystem=strict + ReadWritePaths=/home/user/HTTP_Server
+# and PrivateTmp=true.
 
 [Install]
 WantedBy=multi-user.target

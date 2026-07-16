@@ -3,7 +3,12 @@ config.json
 config.json.backup.*
 # Imported/cloned programs live here at runtime; they are their own repos.
 projects/
+# Per-program output mirrored to disk at runtime (see MANAGER_LOG_DIR).
+logs/
 *.log
+# Local secrets — never commit the real environment file.
+http-server-manager.env
+.manager-token
 .DS_Store
 .env
 .vscode/

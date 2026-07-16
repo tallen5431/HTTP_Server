@@ -2,6 +2,8 @@
 
 const http = require('http');
 const fs = require('fs');
+const net = require('net');
+const crypto = require('crypto');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 const express = require('express');
@@ -15,6 +17,27 @@ const CONFIG_FILE = process.env.CONFIG_FILE || './config.json';
 const PROJECTS_DIR = process.env.PROJECTS_DIR || path.resolve(__dirname, 'projects');
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.MANAGER_API_TOKEN || null;
+
+// Because the manager can start programs and clone-and-run arbitrary git repos,
+// reaching a write endpoint is effectively remote command execution. So we FAIL
+// CLOSED: with no token configured, bind to loopback only (local access still
+// works; nothing is reachable off-box). Setting a token — required before any
+// remote/Tailscale exposure — enables binding on all interfaces. An explicit
+// MANAGER_HOST always wins; MANAGER_ALLOW_NO_AUTH=1 opts back into the old
+// bind-everywhere-without-a-token behavior for trusted private setups.
+const ALLOW_NO_AUTH = /^(1|true|yes)$/i.test(String(process.env.MANAGER_ALLOW_NO_AUTH || ''));
+// By default a program's path must live inside PROJECTS_DIR (defense in depth so
+// a leaked token can't register /etc or /home as a "program" and run it). Set
+// MANAGER_ALLOW_EXTERNAL_PATHS=1 to allow programs outside the projects folder.
+const ALLOW_EXTERNAL_PATHS = /^(1|true|yes)$/i.test(String(process.env.MANAGER_ALLOW_EXTERNAL_PATHS || ''));
+const BIND_HOST = process.env.MANAGER_HOST ||
+  ((API_TOKEN || ALLOW_NO_AUTH) ? '0.0.0.0' : '127.0.0.1');
+
+// Per-program output is mirrored to disk here so log history survives a manager
+// restart (the in-memory ring buffer is just a fast cache). Override with
+// MANAGER_LOG_DIR; defaults to a `logs/` folder next to this install.
+const LOG_DIR = process.env.MANAGER_LOG_DIR || path.resolve(__dirname, 'logs');
+const MAX_LOG_FILE_BYTES = 5 * 1024 * 1024; // rotate a program log once it passes 5 MB
 
 function mergeExistingProgramUrlOptions(newProgram, existingProgram) {
   if (!existingProgram) return;
@@ -53,6 +76,8 @@ function preserveExistingProgramUrlOptions(newConfig, existingConfig) {
 // Process registry
 const processes = new Map();
 const processLogs = new Map();
+// Why each program last stopped, so the UI can tell a clean stop from a crash.
+const lastExit = new Map(); // programId -> { code, signal, time, clean }
 
 // Load configuration (cached with mtime check)
 let cachedConfig = null;
@@ -365,11 +390,33 @@ function getProgramStatus(programId, config, urlContext = null) {
 
   const proc = processes.get(programId);
   const isRunning = proc && proc.isRunning;
+  const exit = lastExit.get(programId) || null;
+
+  // Richer health state than plain running/stopped:
+  //   listening -> process alive AND its port accepts connections
+  //   starting  -> process alive but port not yet reachable
+  //   running   -> process alive, port unknown (no PORT / not detected)
+  //   crashed   -> exited non-zero and not via a user-initiated stop
+  //   stopped   -> cleanly stopped or never started
+  let health;
+  if (isRunning) {
+    health = proc.reachable === true ? 'listening'
+      : proc.reachable === false ? 'starting'
+      : 'running';
+  } else if (exit && !exit.clean) {
+    health = 'crashed';
+  } else {
+    health = 'stopped';
+  }
 
   return {
     id: program.id,
     name: program.name,
     status: isRunning ? 'running' : 'stopped',
+    health,
+    reachable: isRunning ? (proc.reachable === undefined ? null : proc.reachable) : null,
+    exitCode: !isRunning && exit ? (exit.signal ? `signal ${exit.signal}` : exit.code) : null,
+    autostart: Boolean(program.autostart),
     url: generateProgramUrl(program, config, proc && proc.actualPort, urlContext),
     urls: generateProgramUrls(program, config, proc && proc.actualPort),
     pid: isRunning ? proc.pid : null,
@@ -473,6 +520,60 @@ function getProgramLogs(programId, lines = 100) {
   return logs.slice(-lines);
 }
 
+// ---------------------------------------------------------------------------
+// Log persistence — mirror program output to disk so history survives a manager
+// restart. All disk I/O here is best-effort and fully guarded: logging must
+// never be able to crash the manager.
+// ---------------------------------------------------------------------------
+function sanitizeLogName(programId) {
+  return String(programId).replace(/[^a-zA-Z0-9._-]/g, '_') || 'program';
+}
+
+function rotateLogIfNeeded(file) {
+  try {
+    const st = fs.statSync(file);
+    if (st.size > MAX_LOG_FILE_BYTES) {
+      fs.renameSync(file, file + '.1'); // keep one previous generation
+    }
+  } catch (_) {
+    // File may not exist yet — nothing to rotate.
+  }
+}
+
+function appendLogToFile(programId, lines) {
+  if (!lines || !lines.length) return;
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const file = path.join(LOG_DIR, `${sanitizeLogName(programId)}.log`);
+    rotateLogIfNeeded(file);
+    const now = new Date().toISOString();
+    const payload = lines.map(l => `${now} ${l}`).join('\n') + '\n';
+    fs.appendFile(file, payload, () => {});
+  } catch (_) {
+    // Never let logging crash the manager.
+  }
+}
+
+// On startup, seed the in-memory ring buffer from the tail of each program's log
+// file so recent history is visible even after the manager was restarted.
+function preloadProgramLogs(config) {
+  if (!config || !Array.isArray(config.programs)) return;
+  for (const program of config.programs) {
+    try {
+      const file = path.join(LOG_DIR, `${sanitizeLogName(program.id)}.log`);
+      if (!fs.existsSync(file)) continue;
+      const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-500);
+      const logs = lines.map(line => {
+        const sp = line.indexOf(' ');
+        return sp > 0 ? { time: line.slice(0, sp), text: line.slice(sp + 1) } : { time: '', text: line };
+      });
+      if (logs.length) processLogs.set(program.id, logs);
+    } catch (_) {
+      // Ignore unreadable/oversized files.
+    }
+  }
+}
+
 function appendProgramLog(programId, text) {
   const logs = processLogs.get(programId) || [];
   logs.push({ time: new Date().toISOString(), text });
@@ -480,40 +581,216 @@ function appendProgramLog(programId, text) {
     logs.shift();
   }
   processLogs.set(programId, logs);
+  appendLogToFile(programId, [text]);
+}
+
+// ---------------------------------------------------------------------------
+// Health probing — a program can be "running" (process alive) yet not actually
+// serving (crashed after fork, wrong port, still starting up). A TCP connect to
+// its port tells us whether it is really listening.
+// ---------------------------------------------------------------------------
+function getConfigSafe() {
+  try {
+    return loadConfig();
+  } catch (_) {
+    return cachedConfig;
+  }
+}
+
+function probePort(port, host = '127.0.0.1', timeout = 1500) {
+  return new Promise((resolve) => {
+    if (!port) return resolve(false);
+    const socket = new net.Socket();
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      try { socket.destroy(); } catch (_) { /* ignore */ }
+      resolve(ok);
+    };
+    socket.setTimeout(timeout);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    try {
+      socket.connect(Number(port), host);
+    } catch (_) {
+      finish(false);
+    }
+  });
+}
+
+async function probeAndUpdate(programId) {
+  const proc = processes.get(programId);
+  if (!proc || !proc.isRunning) return;
+  const config = getConfigSafe();
+  const program = config && config.programs.find(p => p.id === programId);
+  const port = proc.actualPort || (program && program.env && (program.env.PORT || program.env.port));
+  if (!port) {
+    proc.reachable = null;
+    return;
+  }
+  const ok = await probePort(port);
+  const changed = proc.reachable !== ok;
+  proc.reachable = ok;
+  if (changed) scheduleBroadcast();
+}
+
+let healthProbeTimer = null;
+function startHealthProbes() {
+  if (healthProbeTimer) return;
+  healthProbeTimer = setInterval(() => {
+    for (const [id, proc] of processes.entries()) {
+      if (proc.isRunning) probeAndUpdate(id);
+    }
+  }, 5000);
+  if (healthProbeTimer.unref) healthProbeTimer.unref();
 }
 
 // WebSocket broadcast
 const wsClients = new Set();
 
 function broadcastStatus() {
-  const config = loadConfig();
+  let config;
+  try {
+    config = loadConfig();
+  } catch (err) {
+    // A hand-edited, currently-invalid config must never crash the log pipeline
+    // or a timer callback — fall back to the last known-good config.
+    console.error(`[manager] broadcastStatus: config load failed (${err.message}); using last known good.`);
+    config = cachedConfig;
+    if (!config) return;
+  }
 
   wsClients.forEach(client => {
     if (client.readyState === WebSocket.OPEN) {
-      const status = getAllProgramsStatus(config, client.urlContext || null);
-      const message = JSON.stringify({ type: 'status', data: status });
-      client.send(message);
+      try {
+        const status = getAllProgramsStatus(config, client.urlContext || null);
+        client.send(JSON.stringify({ type: 'status', data: status }));
+      } catch (err) {
+        console.error(`[manager] broadcastStatus: send failed: ${err.message}`);
+      }
     }
   });
 }
 
+// Coalesce bursts of status broadcasts into at most one per interval. Status
+// rarely changes and never carries log lines, so broadcasting on every child
+// output chunk was pure noise (and re-stat'd config each time).
+let broadcastTimer = null;
+function scheduleBroadcast(delay = 300) {
+  if (broadcastTimer) return;
+  broadcastTimer = setTimeout(() => {
+    broadcastTimer = null;
+    broadcastStatus();
+  }, delay);
+  if (broadcastTimer.unref) broadcastTimer.unref();
+}
+
 // Express app
 const app = express();
+
+// Baseline security headers (defense in depth; cheap and dependency-free).
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; " +
+    "base-uri 'self'; form-action 'self'");
+  next();
+});
+
 app.use(express.json());
 app.use(express.static('public'));
 
-// Simple token-based authentication for write APIs.
-// If MANAGER_API_TOKEN is not set, auth is effectively disabled and all requests are allowed.
+// Gate the whole API behind the token — reads included. /api/config and the log
+// endpoints leak filesystem paths, env-var secrets, and program output, so
+// "reads are harmless" does not hold here. /api/health stays open so an external
+// uptime monitor can poll liveness without a credential.
+app.use('/api', (req, res, next) => {
+  if (req.path === '/health') return next();
+  return requireApiToken(req, res, next);
+});
+
+// ---------------------------------------------------------------------------
+// Authentication & rate limiting
+// ---------------------------------------------------------------------------
+// The manager can start programs and clone-and-run arbitrary repos, so the token
+// effectively guards remote command execution. We compare it in constant time,
+// never accept it in the query string (query-string secrets leak into access
+// logs, proxy logs, and browser history), and throttle failed attempts.
+
+// Constant-time comparison that also hides length differences by comparing
+// fixed-size SHA-256 digests of both sides.
+function tokenMatches(candidate) {
+  if (!API_TOKEN) return true; // auth disabled (loopback-only unless opted out)
+  if (typeof candidate !== 'string' || candidate.length === 0) return false;
+  const a = crypto.createHash('sha256').update(candidate).digest();
+  const b = crypto.createHash('sha256').update(API_TOKEN).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 function getRequestToken(req) {
   const header = req.headers['authorization'] || '';
   if (header.startsWith('Bearer ')) {
     return header.slice(7).trim();
   }
-  if (req.query && typeof req.query.token === 'string') {
-    return req.query.token;
-  }
+  // Deliberately NOT read from req.query — query-string secrets leak into logs.
   if (req.body && typeof req.body.token === 'string') {
     return req.body.token;
+  }
+  return null;
+}
+
+// Minimal in-memory brute-force throttle keyed by client IP. No dependency,
+// which is proportionate for a personal tool reached over a private network:
+// after AUTH_MAX_FAILURES failures within AUTH_WINDOW_MS an IP is blocked for
+// AUTH_BLOCK_MS.
+const AUTH_MAX_FAILURES = 8;
+const AUTH_WINDOW_MS = 5 * 60 * 1000;
+const AUTH_BLOCK_MS = 5 * 60 * 1000;
+const authFailures = new Map(); // ip -> { count, first, blockedUntil }
+
+function clientIp(req) {
+  const fwd = req.headers && req.headers['x-forwarded-for'];
+  if (fwd) return String(Array.isArray(fwd) ? fwd[0] : fwd).split(',')[0].trim();
+  return (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+
+function authIsBlocked(ip) {
+  const rec = authFailures.get(ip);
+  return Boolean(rec && rec.blockedUntil && rec.blockedUntil > Date.now());
+}
+
+function recordAuthFailure(ip) {
+  const now = Date.now();
+  let rec = authFailures.get(ip);
+  if (!rec || now - rec.first > AUTH_WINDOW_MS) {
+    rec = { count: 0, first: now, blockedUntil: 0 };
+  }
+  rec.count += 1;
+  if (rec.count >= AUTH_MAX_FAILURES) {
+    rec.blockedUntil = now + AUTH_BLOCK_MS;
+  }
+  authFailures.set(ip, rec);
+}
+
+// Browsers cannot set an Authorization header on a WebSocket, so the client
+// passes the token as a subprotocol named `bearer.<base64url(token)>` (the same
+// approach the Kubernetes API server uses). Returns the decoded token or null.
+function decodeBearerSubprotocol(headerValue) {
+  const parts = String(headerValue || '').split(',').map(s => s.trim());
+  for (const p of parts) {
+    if (p.startsWith('bearer.')) {
+      const b64 = p.slice('bearer.'.length).replace(/-/g, '+').replace(/_/g, '/');
+      try {
+        return Buffer.from(b64, 'base64').toString('utf8');
+      } catch (_) {
+        return null;
+      }
+    }
   }
   return null;
 }
@@ -522,10 +799,17 @@ function requireApiToken(req, res, next) {
   if (!API_TOKEN) {
     return next();
   }
+  const ip = clientIp(req);
+  if (authIsBlocked(ip)) {
+    return res.status(429).json({ success: false, error: 'Too many attempts. Try again later.' });
+  }
   const token = getRequestToken(req);
-  if (token === API_TOKEN) {
+  if (tokenMatches(token)) {
+    authFailures.delete(ip);
     return next();
   }
+  recordAuthFailure(ip);
+  console.warn(`[manager] Auth failure from ${ip} on ${req.method} ${req.path}`);
   res.status(401).json({ success: false, error: 'Unauthorized' });
 }
 
@@ -559,28 +843,25 @@ app.post('/api/programs/:id/stop', requireApiToken, (req, res) => {
   }
 });
 
-app.post('/api/programs/:id/restart', requireApiToken, (req, res) => {
+app.post('/api/programs/:id/restart', requireApiToken, async (req, res) => {
+  const programId = req.params.id;
   try {
-    const programId = req.params.id;
     const config = loadConfig();
 
-    stopProgram(programId);
+    // Restart should end with the program RUNNING whether it was up, stopped, or
+    // crashed. Wait for the real exit (not a fixed delay) so a slow graceful
+    // shutdown can't make us throw "already running" and leave it down.
+    await stopProgramAndWait(programId);
 
-    // Wait a bit for the process to fully exit before restarting
-    setTimeout(() => {
-      try {
-        const result = startProgram(programId, config);
-        res.json({ success: true, data: result });
-      } catch (startErr) {
-        appendProgramLog(programId, `[system] Restart failed: ${startErr.message}`);
-        broadcastStatus();
-        res.status(500).json({ success: false, error: `Restart failed: ${startErr.message}` });
-      }
-    }, 1500);
+    // Give the OS a beat to release the port after the group exits.
+    await new Promise(r => setTimeout(r, 300));
+
+    const result = startProgram(programId, config);
+    res.json({ success: true, data: result });
   } catch (err) {
-    appendProgramLog(req.params.id, `[system] Restart failed: ${err.message}`);
+    appendProgramLog(programId, `[system] Restart failed: ${err.message}`);
     broadcastStatus();
-    res.status(400).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: `Restart failed: ${err.message}` });
   }
 });
 
@@ -612,10 +893,20 @@ app.get('/api/stats', (req, res) => {
   res.json(stats);
 });
 
-// Health check endpoint
+// Health check endpoint. Reflects real readiness: returns 503 when the config
+// can't be loaded so an uptime monitor actually alerts. `authEnabled` lets the
+// web UI know whether it needs to prompt for a token.
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
+  let configOk = true;
+  try {
+    loadConfig();
+  } catch (_) {
+    configOk = false;
+  }
+  res.status(configOk ? 200 : 503).json({
+    status: configOk ? 'ok' : 'degraded',
+    configOk,
+    authEnabled: Boolean(API_TOKEN),
     timestamp: new Date().toISOString()
   });
 });
@@ -645,13 +936,22 @@ function parseListeningPortFromLog(line) {
     return urlMatch[2];
   }
 
-  // 2. A bare local bind address, e.g. "Starting on 0.0.0.0:8001"
-  const bindMatch = clean.match(/\b(?:0\.0\.0\.0|127\.0\.0\.1|localhost|\[::\]|\[::1\]):(\d{2,5})\b/i);
-  if (bindMatch) {
-    return bindMatch[1];
+  // 2. A bare bind-all address (0.0.0.0 / [::]) is almost always the server's own
+  //    listen address, so accept it on any line.
+  const bindAllMatch = clean.match(/\b(?:0\.0\.0\.0|\[::\]):(\d{2,5})\b/);
+  if (bindAllMatch) {
+    return bindAllMatch[1];
   }
 
-  // 3. An explicit "port 8059" / "port: 8059", only on a startup-looking line.
+  // 3. A loopback bind address (127.0.0.1 / localhost / [::1]) is ambiguous — it
+  //    also shows up in "Connected to <dependency> at 127.0.0.1:6379" lines — so
+  //    only trust it on a line that looks like a startup/serving announcement.
+  const loopbackMatch = clean.match(/\b(?:127\.0\.0\.1|localhost|\[::1\]):(\d{2,5})\b/i);
+  if (loopbackMatch && looksLikeStartup) {
+    return loopbackMatch[1];
+  }
+
+  // 4. An explicit "port 8059" / "port: 8059", only on a startup-looking line.
   if (looksLikeStartup) {
     const portMatch = clean.match(/\bport[:=\s]+(\d{2,5})\b/i);
     if (portMatch) {
@@ -697,58 +997,75 @@ function startProgram(programId, config) {
 
   const logs = [];
   processLogs.set(programId, logs);
+  // Fresh run — clear any prior exit record and reset reachability/bookkeeping.
+  lastExit.delete(programId);
+  proc.reachable = undefined;
+  proc.killTimer = null;
+  proc.stoppedByUser = false;
 
-  proc.stdout.on('data', (data) => {
+  const startMarker = `[system] --- started ${new Date().toISOString()} (PID ${proc.pid}) ---`;
+  logs.push({ time: new Date().toISOString(), text: startMarker });
+  appendLogToFile(programId, [startMarker]);
+
+  // Shared handler for stdout/stderr: buffer lines in memory (capped), mirror
+  // them to disk, and detect the bind port. Status is broadcast ONLY when the
+  // detected port changes — status carries no log lines, so a per-chunk broadcast
+  // was wasted work and could flood clients under a chatty program. (The log
+  // panel polls its own endpoint.)
+  const handleOutput = (data, isErr) => {
     const lines = data.toString().split('\n').filter(Boolean);
-    lines.forEach(line => {
-      logs.push({ time: new Date().toISOString(), text: line });
+    if (!lines.length) return;
+    let portJustDetected = false;
+    const rendered = [];
+    for (const line of lines) {
+      const text = isErr ? `[ERR] ${line}` : line;
+      rendered.push(text);
+      logs.push({ time: new Date().toISOString(), text });
       // First detected port wins so noisier later lines can't clobber the
       // address the server actually bound to at startup.
       if (!proc.actualPort) {
         const actualPort = parseListeningPortFromLog(line);
         if (actualPort) {
           proc.actualPort = actualPort;
+          portJustDetected = true;
         }
       }
-      if (logs.length > 1000) {
-        logs.shift();
-      }
-    });
-    broadcastStatus();
-  });
+      if (logs.length > 1000) logs.shift();
+    }
+    appendLogToFile(programId, rendered);
+    if (portJustDetected) {
+      probeAndUpdate(programId); // confirm it is actually listening
+      scheduleBroadcast();
+    }
+  };
 
-  proc.stderr.on('data', (data) => {
-    const lines = data.toString().split('\n').filter(Boolean);
-    lines.forEach(line => {
-      logs.push({ time: new Date().toISOString(), text: `[ERR] ${line}` });
-      // Many frameworks (werkzeug, uvicorn, Dash) print their startup banner
-      // to stderr, so scan it for the bind port too.
-      if (!proc.actualPort) {
-        const actualPort = parseListeningPortFromLog(line);
-        if (actualPort) {
-          proc.actualPort = actualPort;
-        }
-      }
-      if (logs.length > 1000) {
-        logs.shift();
-      }
-    });
-    broadcastStatus();
-  });
+  proc.stdout.on('data', (data) => handleOutput(data, false));
+  proc.stderr.on('data', (data) => handleOutput(data, true));
 
   proc.on('error', (err) => {
     appendProgramLog(programId, `[system] Process failed to start: ${err.message}`);
     proc.isRunning = false;
+    if (proc.killTimer) { clearTimeout(proc.killTimer); proc.killTimer = null; }
+    lastExit.set(programId, { code: null, signal: null, time: Date.now(), clean: false });
     processes.delete(programId);
     broadcastStatus();
   });
 
-  proc.on('exit', (code) => {
-    const line = `[system] Process exited with code ${code}`;
-    logs.push({ time: new Date().toISOString(), text: line });
+  proc.on('exit', (code, signal) => {
+    const desc = signal ? `signal ${signal}` : `code ${code}`;
+    appendProgramLog(programId, `[system] Process exited with ${desc}`);
 
-    // Mark as no longer running and clean up the registry
+    // Mark as no longer running and clean up the registry + escalation timer.
     proc.isRunning = false;
+    if (proc.killTimer) { clearTimeout(proc.killTimer); proc.killTimer = null; }
+    // A code-0 exit, or one we initiated via Stop, is clean; anything else is a
+    // crash the UI should surface.
+    lastExit.set(programId, {
+      code,
+      signal,
+      time: Date.now(),
+      clean: code === 0 || proc.stoppedByUser === true
+    });
     processes.delete(programId);
 
     broadcastStatus();
@@ -789,19 +1106,46 @@ function stopProgram(programId) {
     throw new Error('Program is not running');
   }
 
+  proc.stoppedByUser = true;
   signalProcessTree(proc, 'SIGTERM');
 
-  // Force kill the whole group after 10 seconds if it hasn't exited yet
-  setTimeout(() => {
+  // Force-kill the whole group after 10s if it hasn't exited. Keep the handle so
+  // the exit/error handler can clear it — otherwise every stop leaked a 10s timer.
+  if (proc.killTimer) clearTimeout(proc.killTimer);
+  proc.killTimer = setTimeout(() => {
     if (proc.isRunning) {
       signalProcessTree(proc, 'SIGKILL');
     }
   }, 10000);
+  if (proc.killTimer.unref) proc.killTimer.unref();
 
   return {
     id: programId,
     status: 'stopping'
   };
+}
+
+// Stop a program and resolve once it has actually exited (or after a bounded
+// wait). Restart uses this instead of a fixed delay so it never races a slow
+// graceful shutdown and ends up failing while leaving the program stopped.
+function stopProgramAndWait(programId, timeoutMs = 12000) {
+  return new Promise((resolve) => {
+    const proc = processes.get(programId);
+    if (!proc || !proc.isRunning) {
+      return resolve(); // already stopped — nothing to wait for
+    }
+    let settled = false;
+    const done = () => { if (settled) return; settled = true; resolve(); };
+    proc.once('exit', done);
+    // Safety net: SIGKILL lands at 10s, so exit should fire well before this.
+    const t = setTimeout(done, timeoutMs);
+    if (t.unref) t.unref();
+    try {
+      stopProgram(programId);
+    } catch (_) {
+      done();
+    }
+  });
 }
 
 // Launch all programs marked with autostart: true
@@ -1032,11 +1376,30 @@ function scaffoldStartScript(projectPath) {
   return { created: true, kind };
 }
 
+// Resolve a path and confirm it is inside PROJECTS_DIR (or equal to it). Used to
+// keep browse / add / update from ranging over the whole filesystem, matching the
+// guard the git-import flow already applies to clone destinations.
+function isInsideProjectsDir(targetPath) {
+  try {
+    const root = path.resolve(PROJECTS_DIR);
+    const resolved = path.resolve(targetPath);
+    return resolved === root || resolved.startsWith(root + path.sep);
+  } catch (_) {
+    return false;
+  }
+}
+
 app.get('/api/browse-projects', (req, res) => {
   const dir = req.query.dir || PROJECTS_DIR;
 
   if (!dir) {
     return res.status(400).json({ success: false, error: 'No directory specified' });
+  }
+
+  // Confine browsing to the projects folder so this can't enumerate arbitrary
+  // host directories (e.g. ?dir=/etc, /root, /home).
+  if (!isInsideProjectsDir(dir)) {
+    return res.status(403).json({ success: false, error: 'Directory is outside the projects folder' });
   }
 
   if (!fs.existsSync(dir)) {
@@ -1185,11 +1548,21 @@ app.post('/api/restart-manager', requireApiToken, (req, res) => {
     message: 'HTTP Server Manager restarting…'
   });
 
-  // Give the HTTP response a moment to flush, then exit.
+  // Signal every child process group before exiting so they aren't orphaned.
+  // Orphans keep holding their ports and can no longer be managed; the SIGINT
+  // shutdown path does the same. Programs marked autostart come back on relaunch.
+  for (const [id, proc] of processes.entries()) {
+    if (proc.isRunning) {
+      console.log(`[manager] Stopping ${id} before restart...`);
+      signalProcessTree(proc, 'SIGTERM');
+    }
+  }
+
+  // Give the HTTP response and the SIGTERMs a moment to land, then exit.
   setTimeout(() => {
     console.log('[manager] Exiting process for restart');
     process.exit(0);
-  }, 1000);
+  }, 1200);
 });
 
 // Config editing endpoints
@@ -1213,9 +1586,19 @@ app.put('/api/programs/:id', requireApiToken, (req, res) => {
     // Update program with new values
     const program = config.programs[programIndex];
     if (updates.name !== undefined) program.name = updates.name;
-    if (updates.path !== undefined) program.path = updates.path;
+    if (updates.path !== undefined) {
+      if (!ALLOW_EXTERNAL_PATHS && !isInsideProjectsDir(updates.path)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Program path must be inside the projects folder (set MANAGER_ALLOW_EXTERNAL_PATHS=1 to override)'
+        });
+      }
+      program.path = updates.path;
+    }
     if (updates.url !== undefined) program.url = updates.url;
     if (updates.env !== undefined) program.env = updates.env;
+    // Allow toggling autostart from the UI.
+    if (updates.autostart !== undefined) program.autostart = Boolean(updates.autostart);
 
     // Validate the updated config
     validateConfig(config);
@@ -1258,6 +1641,13 @@ app.post('/api/programs', requireApiToken, (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Missing required fields: id, name, path'
+      });
+    }
+
+    if (!ALLOW_EXTERNAL_PATHS && !isInsideProjectsDir(newProgram.path)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Program path must be inside the projects folder (set MANAGER_ALLOW_EXTERNAL_PATHS=1 to override)'
       });
     }
 
@@ -1371,29 +1761,56 @@ app.delete('/api/programs/:id', requireApiToken, (req, res) => {
 async function startServer() {
   const config = loadConfig();
 
+  // Seed in-memory log buffers from disk so recent history survives a manager
+  // restart (the buffers are otherwise empty until a program prints again).
+  preloadProgramLogs(config);
+
+  // Backstops: a stray throw in a stream 'data' handler or timer callback (e.g.
+  // loadConfig on a hand-broken config) must not take the whole manager — and
+  // everything it manages — down. Log it and stay up.
+  process.on('uncaughtException', (err) => {
+    console.error('[manager] Uncaught exception (kept alive):', err && err.stack ? err.stack : err);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('[manager] Unhandled rejection (kept alive):', reason);
+  });
+
   console.log('HTTP Server Manager');
   console.log('==================');
 
   const server = http.createServer(app);
   console.log('✓ Running in HTTP mode');
 
-  // WebSocket server
-  const wss = new WebSocket.Server({ server });
+  // WebSocket server. handleProtocols echoes back a client-offered subprotocol
+  // so browsers are satisfied while we smuggle the auth token in via another one.
+  const wss = new WebSocket.Server({
+    server,
+    handleProtocols: (protocols) => {
+      for (const p of protocols) {
+        if (!String(p).startsWith('bearer.')) return p; // prefer the plain 'manager' marker
+      }
+      const first = protocols.values().next().value;
+      return first || false;
+    }
+  });
 
   wss.on('connection', (ws, req) => {
-    // Optional auth: require MANAGER_API_TOKEN for WebSocket clients when set.
+    // Require the token for WebSocket clients when auth is enabled. The token is
+    // read from the `bearer.<base64url(token)>` subprotocol (browser-friendly),
+    // falling back to ?token= for non-browser clients. Same constant-time compare
+    // and brute-force throttle as the HTTP path.
     if (API_TOKEN) {
-      try {
-        const url = new URL(req.url, 'http://localhost');
-        const token = url.searchParams.get('token');
-        if (token !== API_TOKEN) {
-          ws.close(1008, 'Unauthorized');
-          return;
-        }
-      } catch (err) {
+      const ip = clientIp(req);
+      let token = decodeBearerSubprotocol(req.headers['sec-websocket-protocol']);
+      if (!token) {
+        try { token = new URL(req.url, 'http://localhost').searchParams.get('token'); } catch (_) { /* ignore */ }
+      }
+      if (authIsBlocked(ip) || !tokenMatches(token)) {
+        if (!authIsBlocked(ip)) recordAuthFailure(ip);
         ws.close(1008, 'Unauthorized');
         return;
       }
+      authFailures.delete(ip);
     }
 
     ws.urlContext = getRequestUrlContext(req);
@@ -1410,25 +1827,43 @@ async function startServer() {
     });
   });
 
-  server.listen(PORT, () => {
-    console.log(`✓ Server running on http://localhost:${PORT}`);
+  server.listen(PORT, BIND_HOST, () => {
     const activeConfig = loadConfig();
+
+    console.log(`✓ Server listening on ${BIND_HOST}:${PORT}`);
     console.log(`✓ Loaded ${activeConfig.programs.length} program(s)`);
+
+    // Auth / exposure status. This is a remote-capable control plane, so make the
+    // security posture obvious at startup.
+    if (API_TOKEN) {
+      console.log('🔒 API token set — auth is ENABLED for the API and WebSocket.');
+    } else if (BIND_HOST === '127.0.0.1') {
+      console.log('🔒 No API token set — bound to loopback only (local access).');
+      console.log('   To reach this from another device, set MANAGER_API_TOKEN and put it on a');
+      console.log('   private network (Tailscale recommended). See the README "Remote access".');
+    } else {
+      console.log('⚠️  No API token set but bound to all interfaces (MANAGER_ALLOW_NO_AUTH).');
+      console.log('   Anyone who can reach this port can run programs on this machine.');
+    }
+
     console.log('\nAccess the web interface at:');
     console.log(`  http://localhost:${PORT}`);
 
-    // Get local IP addresses
-    const { networkInterfaces } = require('os');
-    const nets = networkInterfaces();
-
-    Object.keys(nets).forEach((name) => {
-      nets[name].forEach((net) => {
-        // Skip internal and non-IPv4
-        if (net.internal || net.family !== 'IPv4') return;
-
-        console.log(`  http://${net.address}:${PORT}`);
+    if (BIND_HOST !== '127.0.0.1') {
+      const { networkInterfaces } = require('os');
+      const nets = networkInterfaces();
+      Object.keys(nets).forEach((name) => {
+        nets[name].forEach((net) => {
+          // Skip internal and non-IPv4
+          if (net.internal || net.family !== 'IPv4') return;
+          console.log(`  http://${net.address}:${PORT}`);
+        });
       });
-    });
+    }
+
+    // Begin probing running programs' ports so cards can show listening vs
+    // running-but-not-serving.
+    startHealthProbes();
 
     // Launch any programs marked with autostart: true
     launchAutostart(activeConfig);
@@ -1472,5 +1907,9 @@ module.exports = {
   getLanIpAddress,
   getPrimaryIpAddress,
   generateProgramUrls,
-  rankLanInterface
+  rankLanInterface,
+  parseListeningPortFromLog,
+  isInsideProjectsDir,
+  decodeBearerSubprotocol,
+  sanitizeLogName
 };
