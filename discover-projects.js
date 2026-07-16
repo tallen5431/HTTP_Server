@@ -216,6 +216,8 @@ function discoverProjects(projectsDir) {
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    // Skip backup folders
+    if (entry.name.endsWith('.backup')) continue;
 
     const projectPath = path.join(projectsDir, entry.name);
     const startScriptPath = path.join(projectPath, 'Start.sh');
