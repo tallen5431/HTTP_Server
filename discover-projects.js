@@ -53,18 +53,23 @@ function parseStartScript(scriptPath) {
       hasStreamlit = true;
     }
 
-    // Extract PORT from various patterns
+    // Extract PORT from various patterns.
+    //
+    // IMPORTANT: assignment forms require a literal `=` (never a bare `[=\s]+`).
+    // A `[=\s]+` class matches newlines, so a line like `export PORT HOST`
+    // followed by the next statement would let `HOST` swallow the following
+    // token — the class of bug that turned `export PORT HOST\necho ...` into
+    // `HOST=echo`. Flag forms (`--port 8080`) allow only same-line space/tab.
     const portPatterns = [
-      // `export PORT="${PORT:-8080}"` — the default-value form the manager's own
-      // scaffolded Start.sh scripts use; capture the fallback so imported programs
-      // get a URL. (Must come first so it wins over the looser patterns below.)
-      /\bPORT\s*=\s*["']?\$\{[^}]*:-\s*(\d{2,5})/i,
-      /PORT[=\s]+["']?(\d+)["']?/i,
-      /--port[=\s]+["']?(\d+)["']?/i,
-      /--bind[=\s]+["']?[^\s"']*?:(\d+)["']?/i, // gunicorn/uvicorn --bind host:port
-      /-p[=\s]+["']?(\d+)["']?/i,
-      /listen[=\s]+["']?(\d+)["']?/i,
-      /port[=\s]+["']?(\d+)["']?/i
+      // `${PORT:-8080}` / `${PORT:=8080}` default-value forms (the manager's own
+      // scaffolded scripts, and the `: "${PORT:=8059}"` idiom). Capture the
+      // fallback so imported programs get a URL. Must come first.
+      /\$\{\s*PORT\s*:[-=]\s*(\d{2,5})/i,
+      /\bPORT[ \t]*=[ \t]*["']?(\d{2,5})\b/i,          // PORT=8080 / export PORT=8080
+      /--port[ \t]*=?[ \t]*["']?(\d{2,5})\b/i,         // --port 8080 / --port=8080
+      /--bind[ \t]+["']?[^ \t"':]*:(\d{2,5})\b/i,      // gunicorn/uvicorn --bind host:port
+      /-p[ \t]+["']?(\d{2,5})\b/i,                     // -p 8080
+      /\blisten[ \t]+["']?(\d{2,5})\b/i                // listen 8080
     ];
 
     for (const pattern of portPatterns) {
@@ -75,11 +80,13 @@ function parseStartScript(scriptPath) {
       }
     }
 
-    // Extract HOST — accept a hostname too, not just a numeric IP.
+    // Extract HOST — accept a hostname too, not just a numeric IP. Same rule as
+    // PORT: the env-assignment form requires a literal `=` so a bare `export
+    // PORT HOST` can't capture the next line's token.
     const hostPatterns = [
-      /HOST[=\s]+["']?([A-Za-z0-9._-]+)["']?/i,
-      /--host[=\s]+["']?([A-Za-z0-9._-]+)["']?/i,
-      /-h[=\s]+["']?([A-Za-z0-9._-]+)["']?/i
+      /\$\{\s*HOST\s*:[-=]\s*["']?([A-Za-z0-9][A-Za-z0-9._-]*)/i,  // ${HOST:=0.0.0.0}
+      /\bHOST[ \t]*=[ \t]*["']?([A-Za-z0-9][A-Za-z0-9._-]*)/i,     // HOST=0.0.0.0
+      /--host[ \t]*=?[ \t]*["']?([A-Za-z0-9][A-Za-z0-9._-]*)/i     // --host 0.0.0.0
     ];
 
     for (const pattern of hostPatterns) {
@@ -90,8 +97,10 @@ function parseStartScript(scriptPath) {
       }
     }
 
-    // Extract other environment variables
-    const envVarPattern = /export\s+([A-Z_][A-Z0-9_]*)[=\s]+["']?([^"'\n]+)["']?/gi;
+    // Extract other environment variables. Require a literal `=` on the same
+    // line (not `[=\s]+`) so `export FOO BAR` — re-exporting already-set vars —
+    // doesn't record FOO="BAR".
+    const envVarPattern = /export\s+([A-Z_][A-Z0-9_]*)[ \t]*=[ \t]*["']?([^"'\n]+?)["']?[ \t]*$/gim;
     let match;
     while ((match = envVarPattern.exec(code)) !== null) {
       const [, key, value] = match;

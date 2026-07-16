@@ -123,6 +123,38 @@ test('parseStartScript: extracts a literal port and numeric host', () => {
   assert.strictEqual(env.HOST, '0.0.0.0');
 });
 
+test('parseStartScript: reads ${VAR:=default} and never captures the next token', () => {
+  // Regression: the `: "${HOST:=0.0.0.0}"` idiom followed by a bare
+  // `export PORT HOST` and an `echo` line used to yield HOST="echo" because the
+  // old `HOST[=\s]+` class matched across the newline into the echo statement.
+  const env = withTempScript(
+    '#!/usr/bin/env bash\nset -euo pipefail\n' +
+    ': "${PORT:=8059}"\n: "${HOST:=0.0.0.0}"\n\nexport PORT HOST\n\n' +
+    'echo "[RUN] http://$HOST:$PORT"\nexec python app.py\n',
+    (f) => discover.parseStartScript(f).env
+  );
+  assert.strictEqual(env.PORT, '8059');
+  assert.strictEqual(env.HOST, '0.0.0.0');
+});
+
+test('parseStartScript: bare `export PORT HOST` records no stray value', () => {
+  const env = withTempScript(
+    '#!/usr/bin/env bash\nexport PORT HOST\ngunicorn wsgi:app\n',
+    (f) => discover.parseStartScript(f).env
+  );
+  assert.strictEqual(env.PORT, undefined);
+  assert.strictEqual(env.HOST, undefined);
+});
+
+test('parseStartScript: extracts host and port from CLI flags', () => {
+  const env = withTempScript(
+    '#!/usr/bin/env bash\ngunicorn --host 127.0.0.1 --port 5001 app:app\n',
+    (f) => discover.parseStartScript(f).env
+  );
+  assert.strictEqual(env.PORT, '5001');
+  assert.strictEqual(env.HOST, '127.0.0.1');
+});
+
 // ---------------------------------------------------------------------------
 // discoverProjects — must throw (not process.exit) on a missing directory so a
 // require-ing daemon can handle it.
