@@ -767,6 +767,25 @@ app.use((req, res, next) => {
   next();
 });
 
+// CSRF defense for state-changing requests. A cross-origin browser form/fetch
+// carries an Origin (or Referer) whose host won't match ours, so reject it — this
+// closes the CSRF hole even when auth is disabled (a malicious page you browse to
+// can otherwise POST start/stop/delete to the manager on your LAN). Non-browser
+// clients (curl, scripts) send no Origin/Referer and are unaffected.
+const UNSAFE_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+app.use((req, res, next) => {
+  if (!UNSAFE_METHODS.has(req.method)) return next();
+  const source = req.headers.origin || req.headers.referer;
+  if (!source) return next(); // non-browser client — not a CSRF vector
+  let sourceHost;
+  try { sourceHost = new URL(source).host.toLowerCase(); } catch (_) { sourceHost = null; }
+  const ownHost = String(req.headers.host || '').toLowerCase();
+  if (!sourceHost || sourceHost !== ownHost) {
+    return res.status(403).type('text/plain').send('Forbidden: cross-origin request rejected.');
+  }
+  next();
+});
+
 // Baseline security headers (defense in depth; cheap and dependency-free).
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
