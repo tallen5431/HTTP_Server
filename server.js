@@ -1935,6 +1935,14 @@ async function startServer() {
   });
 
   wss.on('connection', (ws, req) => {
+    // The WS upgrade bypasses the Express middleware stack, so apply the same
+    // Host-header allowlist here (DNS-rebinding defense) — otherwise a rebound
+    // page could open a socket and read status even in no-auth mode.
+    if (!hostIsAllowed(req)) {
+      ws.close(1008, 'Forbidden host');
+      return;
+    }
+
     // Require the token for WebSocket clients when auth is enabled. The token is
     // read ONLY from the `bearer.<base64url(token)>` subprotocol — never the query
     // string, which would leak the secret into reverse-proxy/access logs (the HTTP
