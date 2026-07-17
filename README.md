@@ -101,8 +101,10 @@ Read this before exposing the manager beyond your own machine.
 
 1. **Set an access token.** Export `MANAGER_API_TOKEN` (e.g. `openssl rand -hex 32`).
    Every API request and the WebSocket then require it. The web UI shows a
-   **Sign in** screen the first time and stores the token on that device. Without
-   a token, the manager binds to loopback only and refuses remote connections.
+   **Sign in** screen the first time and stores the token on that device. By
+   default, with no token the manager binds to loopback only and refuses remote
+   connections (unless you override that with `MANAGER_HOST` or
+   `MANAGER_ALLOW_NO_AUTH` — see point 5).
 2. **Don't run it as root.** The shipped `systemd` unit runs as a non-root user.
    Because the manager launches arbitrary programs and clones/runs repos, running
    as root turns any of that into full host compromise.
@@ -113,10 +115,19 @@ Read this before exposing the manager beyond your own machine.
 4. **Programs stay inside your projects folder.** Adding/updating a program with a
    `path` outside `PROJECTS_DIR` is rejected (override with
    `MANAGER_ALLOW_EXTERNAL_PATHS=1` only if you trust every caller).
+5. **Running without a token? Bind to Tailscale only, not `0.0.0.0`.** Two knobs
+   disable the fail-closed loopback default and expose the manager **unauthenticated**:
+   `MANAGER_ALLOW_NO_AUTH=1` binds all interfaces (LAN *and* Tailscale), and a
+   non-loopback `MANAGER_HOST` binds whatever you point it at. If you want
+   no-token convenience, set `MANAGER_HOST` to your Tailscale IP (`100.x.y.z`) so
+   the manager is reachable over Tailscale but **not** on your home Wi-Fi. Prefer a
+   token whenever the manager can be reached from the LAN.
 
 What the app does for you: token auth on **all** endpoints (reads included) and
-the WebSocket, constant-time token comparison, no token in query strings, a
-brute-force throttle on failed auth, basic security headers, and a loud startup
+the WebSocket, constant-time token comparison, no token in query strings (HTTP
+*or* WebSocket), a brute-force throttle on failed auth, a **Host-header allowlist**
+that blocks DNS-rebinding (loopback / IP literals / `*.ts.net` are allowed; add
+others via `MANAGER_ALLOWED_HOSTS`), basic security headers, and a loud startup
 banner telling you exactly what's exposed.
 
 ## Remote Access (manage from anywhere)
@@ -328,9 +339,17 @@ You can configure the server using these environment variables:
   binds to `127.0.0.1` only** (local-only, fail-closed). Set it to enable auth and
   remote access.
 - `MANAGER_HOST`: Explicit bind address (overrides the token-based default; e.g.
-  set to your Tailscale `100.x.y.z` to listen on Tailscale only)
-- `MANAGER_ALLOW_NO_AUTH`: Set to `1` to bind on all interfaces **without** a token
-  (only on a fully trusted network)
+  set to your Tailscale `100.x.y.z` to listen on Tailscale only). ⚠️ A
+  non-loopback value with **no** `MANAGER_API_TOKEN` exposes the manager
+  **unauthenticated** on that address — set a token too unless it's a trusted
+  private interface.
+- `MANAGER_ALLOW_NO_AUTH`: Set to `1`/`true`/`yes` to bind on **all** interfaces
+  (LAN *and* Tailscale) **without** a token. ⚠️ Anyone who can reach the port can
+  run programs on this machine — only on a fully trusted network. Prefer a token,
+  or `MANAGER_HOST=<tailscale-ip>` to keep it off the LAN.
+- `MANAGER_ALLOWED_HOSTS`: Comma-separated extra `Host` header values to accept
+  (e.g. a reverse-proxy domain). Loopback, raw IP literals, and `*.ts.net` are
+  always allowed; everything else is rejected as a DNS-rebinding guard.
 - `MANAGER_ALLOW_EXTERNAL_PATHS`: Set to `1` to allow program paths outside
   `PROJECTS_DIR` (off by default as a safety guard)
 - `MANAGER_TRUST_PROXY`: Set to `1` only when the manager sits behind a trusted

@@ -19,8 +19,10 @@ Environment="NODE_ENV=production"
 Environment="CONFIG_FILE=/home/user/HTTP_Server/config.json"
 Environment="PORT=3000"
 # PROJECTS_DIR is intentionally unset here so it falls back to server.js's
-# default of <WorkingDirectory>/projects. Only set it explicitly if projects
-# should live outside this checkout.
+# default: a `projects/` folder next to server.js itself (i.e. the ExecStart
+# path) — which in this unit is the same as WorkingDirectory. If you move
+# WorkingDirectory without moving server.js they diverge, so set PROJECTS_DIR
+# explicitly whenever projects should live outside this checkout.
 
 # Put the access token (and any other secrets) in this file — NOT in this unit,
 # which may be world-readable. Create it from the shipped example:
