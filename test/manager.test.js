@@ -155,6 +155,51 @@ test('parseStartScript: extracts host and port from CLI flags', () => {
   assert.strictEqual(env.HOST, '127.0.0.1');
 });
 
+test('parseStartScript: unquoted env value stops at operators/comments', () => {
+  const env = withTempScript(
+    '#!/usr/bin/env bash\nexport DEBUG=1 && npm start\nexport NODE_ENV=production   # note\n',
+    (f) => discover.parseStartScript(f).env
+  );
+  assert.strictEqual(env.DEBUG, '1');            // not "1 && npm start"
+  assert.strictEqual(env.NODE_ENV, 'production'); // not "production   # note"
+});
+
+test('parseStartScript: drops values holding an unresolved variable reference', () => {
+  const env = withTempScript(
+    '#!/usr/bin/env bash\nexport URL=http://localhost:$PORT/api\n',
+    (f) => discover.parseStartScript(f).env
+  );
+  assert.strictEqual(env.URL, undefined);
+});
+
+test('parseStartScript: rejects out-of-range ports and normalizes leading zeros', () => {
+  assert.strictEqual(
+    withTempScript('#!/usr/bin/env bash\nexport PORT=99999\n', (f) => discover.parseStartScript(f).env).PORT,
+    undefined
+  );
+  assert.strictEqual(
+    withTempScript('#!/usr/bin/env bash\nexport PORT=08080\n', (f) => discover.parseStartScript(f).env).PORT,
+    '8080'
+  );
+});
+
+test('discoverProjects: gives colliding/empty directory names unique non-empty ids', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+  try {
+    for (const name of ['Web App', 'web-app', '日本語']) {
+      const p = path.join(dir, name);
+      fs.mkdirSync(p);
+      fs.writeFileSync(path.join(p, 'Start.sh'), '#!/usr/bin/env bash\npython app.py\n');
+    }
+    const ids = discover.discoverProjects(dir).map(p => p.id);
+    assert.strictEqual(ids.length, 3);
+    assert.strictEqual(new Set(ids).size, 3, 'ids must be unique');
+    assert.ok(ids.every(id => id && id.length > 0), 'ids must be non-empty');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // hostIsAllowed — DNS-rebinding defense. Loopback, IP literals, and *.ts.net are
 // allowed; an arbitrary attacker domain (the rebinding vector) is rejected.

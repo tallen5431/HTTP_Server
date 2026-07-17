@@ -97,28 +97,39 @@ function parseStartScript(scriptPath) {
       }
     }
 
-    // Extract other environment variables. Require a literal `=` on the same
-    // line (not `[=\s]+`) so `export FOO BAR` — re-exporting already-set vars —
-    // doesn't record FOO="BAR".
-    const envVarPattern = /export\s+([A-Z_][A-Z0-9_]*)[ \t]*=[ \t]*["']?([^"'\n]+?)["']?[ \t]*$/gim;
+    // Extract other environment variables. Require a literal `=` immediately after
+    // the key (shell assignment syntax — no spaces around `=`). A quoted value may
+    // contain spaces; an unquoted value stops at the first whitespace, inline
+    // comment, or shell operator so `export DEBUG=1 && npm start` records "1", not
+    // "1 && npm start", and `export X=y  # note` records "y", not "y  # note".
+    const envVarPattern = /export\s+([A-Z_][A-Z0-9_]*)=(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#;&|"']*))/gi;
     let match;
     while ((match = envVarPattern.exec(code)) !== null) {
-      const [, key, value] = match;
-      // Skip PATH, HOME, and keys already set (PORT, HOST)
-      // Also skip variable references like $HOST, $PORT, ${VAR}
-      const trimmedValue = value.trim();
-      if (key !== 'PATH' && key !== 'HOME' && !env[key] && !trimmedValue.startsWith('$')) {
-        env[key] = trimmedValue;
+      const key = match[1];
+      const value = (match[2] !== undefined ? match[2]
+        : match[3] !== undefined ? match[3]
+        : match[4] || '').trim();
+      // Skip PATH/HOME, keys already set (PORT/HOST), empty values, and anything
+      // holding an unresolved variable reference ($VAR / ${VAR}) — storing that
+      // literal would inject an unexpanded token into config.json.
+      const looksLikeVarRef = /\$\{?[A-Za-z_]/.test(value);
+      if (key !== 'PATH' && key !== 'HOME' && !env[key] && value && !looksLikeVarRef) {
+        env[key] = value;
       }
     }
 
-    // Validate PORT is numeric, remove if not
-    if (env.PORT && !/^\d+$/.test(env.PORT)) {
-      console.warn(`  ⚠️  Invalid PORT value "${env.PORT}" (not numeric), removing`);
-      delete env.PORT;
+    // Validate PORT: numeric and within the TCP range. Normalize leading zeros.
+    if (env.PORT) {
+      const n = Number(env.PORT);
+      if (!/^\d+$/.test(env.PORT) || n < 1 || n > 65535) {
+        console.warn(`  ⚠️  Invalid PORT value "${env.PORT}" (not a 1–65535 port), removing`);
+        delete env.PORT;
+      } else {
+        env.PORT = String(n);
+      }
     }
 
-    // Validate HOST is valid IP or hostname
+    // Drop a HOST that is really an unresolved variable reference.
     if (env.HOST && env.HOST.startsWith('$')) {
       console.warn(`  ⚠️  Invalid HOST value "${env.HOST}" (variable reference), removing`);
       delete env.HOST;
@@ -221,6 +232,7 @@ function discoverProjects(projectsDir) {
   }
 
   const projects = [];
+  const usedIds = new Set();
   const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -245,8 +257,18 @@ function discoverProjects(projectsDir) {
     // Detect metadata
     const metadata = detectProjectMetadata(projectPath);
 
-    // Generate program ID (lowercase, no spaces)
-    const id = entry.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    // Generate program ID (lowercase, hyphenated, ascii-only). Fall back to a
+    // stable slug when sanitizing leaves nothing (e.g. an all-non-ASCII name), and
+    // suffix on collision so two folders that normalize to the same id (e.g.
+    // "Web App" and "web-app") don't overwrite each other or fail config validation.
+    let baseId = entry.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
+    if (!baseId) baseId = 'program';
+    let id = baseId;
+    let dedup = 2;
+    while (usedIds.has(id)) {
+      id = `${baseId}-${dedup++}`;
+    }
+    usedIds.add(id);
 
     // Generate display name
     const displayName = generateDisplayName(projectPath, metadata);
