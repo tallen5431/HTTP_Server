@@ -156,6 +156,23 @@ test('parseStartScript: extracts host and port from CLI flags', () => {
 });
 
 // ---------------------------------------------------------------------------
+// hostIsAllowed — DNS-rebinding defense. Loopback, IP literals, and *.ts.net are
+// allowed; an arbitrary attacker domain (the rebinding vector) is rejected.
+// ---------------------------------------------------------------------------
+test('hostIsAllowed: accepts loopback/IP/Tailscale, rejects unknown domains', () => {
+  const mk = (host) => ({ headers: { host } });
+  assert.strictEqual(server.hostIsAllowed(mk('localhost:3000')), true);
+  assert.strictEqual(server.hostIsAllowed(mk('127.0.0.1:3000')), true);
+  assert.strictEqual(server.hostIsAllowed(mk('192.168.1.199:3000')), true);
+  assert.strictEqual(server.hostIsAllowed(mk('100.92.90.118:3000')), true);
+  assert.strictEqual(server.hostIsAllowed(mk('[::1]:3000')), true);
+  assert.strictEqual(server.hostIsAllowed(mk('tj-nuc.tail8ce2ce.ts.net:3000')), true);
+  // The DNS-rebinding vector: an attacker domain rebound to our IP.
+  assert.strictEqual(server.hostIsAllowed(mk('evil.example.com')), false);
+  assert.strictEqual(server.hostIsAllowed(mk('')), false);
+});
+
+// ---------------------------------------------------------------------------
 // discoverProjects — must throw (not process.exit) on a missing directory so a
 // require-ing daemon can handle it.
 // ---------------------------------------------------------------------------

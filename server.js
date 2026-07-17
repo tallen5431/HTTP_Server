@@ -37,6 +37,14 @@ const TRUST_PROXY = /^(1|true|yes)$/i.test(String(process.env.MANAGER_TRUST_PROX
 const BIND_HOST = process.env.MANAGER_HOST ||
   ((API_TOKEN || ALLOW_NO_AUTH) ? '0.0.0.0' : '127.0.0.1');
 
+// Extra Host header values to accept, comma-separated (e.g. a reverse-proxy
+// domain like manager.example.com). Loopback, raw IP literals, and *.ts.net
+// (Tailscale MagicDNS) are always allowed; see hostIsAllowed().
+const ALLOWED_HOSTS = new Set(
+  String(process.env.MANAGER_ALLOWED_HOSTS || '')
+    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+);
+
 // Per-program output is mirrored to disk here so log history survives a manager
 // restart (the in-memory ring buffer is just a fast cache). Override with
 // MANAGER_LOG_DIR; defaults to a `logs/` folder next to this install.
@@ -139,6 +147,13 @@ function loadConfig() {
     return cachedConfig;
   } catch (err) {
     console.error('Error loading config:', err.message);
+    // Degrade gracefully: a hand-edit that produces invalid JSON or a duplicate
+    // id should not take down the read/start/restart endpoints when we still hold
+    // a valid last-known-good config (broadcastStatus/getConfigSafe already do
+    // this). Only surface the error when there is nothing cached to fall back to.
+    if (cachedConfig) {
+      return cachedConfig;
+    }
     throw err;
   }
 }
@@ -223,6 +238,41 @@ function validateConfig(config) {
   return true;
 }
 
+// Memoized result of `tailscale status --json`. This lookup shells out to a
+// subprocess, and it is called for every program on every status broadcast
+// (which fire on each health-probe reachability flip, ~every few seconds). Doing
+// it synchronously and uncached meant N subprocesses per broadcast, and — worse —
+// if `tailscaled` was slow or wedged the untimed execSync blocked the event loop
+// and froze the whole manager. Cache the DNS name for TS_LOOKUP_TTL_MS and bound
+// the subprocess with a hard timeout so it can never wedge the server.
+const TS_LOOKUP_TTL_MS = 60 * 1000;
+let tsHostnameCache = { value: null, at: 0 };
+
+function resolveTailscaleDnsName() {
+  const now = Date.now();
+  if (tsHostnameCache.at && (now - tsHostnameCache.at) < TS_LOOKUP_TTL_MS) {
+    return tsHostnameCache.value;
+  }
+  let value = null;
+  try {
+    const status = JSON.parse(execSync('tailscale status --json', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,        // never let a hung `tailscale` CLI block the event loop
+      killSignal: 'SIGKILL',
+      maxBuffer: 4 * 1024 * 1024
+    }));
+    const dnsName = status && status.Self && status.Self.DNSName;
+    if (dnsName) value = dnsName.replace(/\.$/, '');
+  } catch (err) {
+    // Tailscale is optional (not installed / not up / timed out) — cache the miss
+    // too so we don't re-spawn the CLI on every broadcast while it's unavailable.
+    value = null;
+  }
+  tsHostnameCache = { value, at: now };
+  return value;
+}
+
 // Get the current machine's Tailscale HTTPS hostname when available.
 function getTailscaleHostname(config) {
   const configuredHostname = config && (config.tailscaleHostname || config.tailscaleHost);
@@ -235,17 +285,7 @@ function getTailscaleHostname(config) {
     return envHostname.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
   }
 
-  try {
-    const status = JSON.parse(execSync('tailscale status --json', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
-    const dnsName = status && status.Self && status.Self.DNSName;
-    if (dnsName) {
-      return dnsName.replace(/\.$/, '');
-    }
-  } catch (err) {
-    // Tailscale is optional; fall back to the normal hostname/IP path below.
-  }
-
-  return null;
+  return resolveTailscaleDnsName();
 }
 
 
@@ -691,8 +731,41 @@ function scheduleBroadcast(delay = 300) {
   if (broadcastTimer.unref) broadcastTimer.unref();
 }
 
+// Is the request's Host header one we're willing to serve? This is the primary
+// defense against DNS-rebinding: an attacker page at evil.example whose domain
+// has been rebound to our IP still sends `Host: evil.example`, which is rejected
+// here — so it can never become same-origin with the manager and drive the
+// (possibly unauthenticated) control plane. Raw IP literals are allowed because
+// rebinding fundamentally needs a *domain name*; loopback and *.ts.net (Tailscale
+// MagicDNS) are always fine; anything else must be listed in MANAGER_ALLOWED_HOSTS.
+function hostIsAllowed(req) {
+  const raw = (req.headers && req.headers.host) || '';
+  if (!raw) return false;
+  // Strip the port. IPv6 literals arrive bracketed: "[::1]:3000".
+  let host = String(raw).trim().toLowerCase();
+  if (host.startsWith('[')) {
+    host = host.slice(1, host.indexOf(']') === -1 ? host.length : host.indexOf(']'));
+  } else {
+    host = host.replace(/:\d+$/, '');
+  }
+  if (!host) return false;
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (net.isIP(host)) return true;              // raw IPv4/IPv6 — not a rebinding vector
+  if (host.endsWith('.ts.net')) return true;    // Tailscale MagicDNS
+  return ALLOWED_HOSTS.has(host);
+}
+
 // Express app
 const app = express();
+
+// Reject requests whose Host header we don't recognize (DNS-rebinding defense).
+app.use((req, res, next) => {
+  if (!hostIsAllowed(req)) {
+    return res.status(403).type('text/plain')
+      .send('Forbidden: unrecognized Host header. Set MANAGER_ALLOWED_HOSTS if this host is legitimate.');
+  }
+  next();
+});
 
 // Baseline security headers (defense in depth; cheap and dependency-free).
 app.use((req, res, next) => {
@@ -701,8 +774,8 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Content-Security-Policy',
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; " +
-    "base-uri 'self'; form-action 'self'");
+    "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; " +
+    "base-uri 'self'; form-action 'self'; object-src 'none'");
   next();
 });
 
@@ -866,8 +939,20 @@ app.post('/api/programs/:id/restart', requireApiToken, async (req, res) => {
     // shutdown can't make us throw "already running" and leave it down.
     await stopProgramAndWait(programId);
 
-    // Give the OS a beat to release the port after the group exits.
+    // Give the OS a beat to release the port after the group exits, then confirm
+    // the port is actually free before relaunching. bash exiting doesn't guarantee
+    // a server it backgrounded (e.g. `python app.py &`) has released its listening
+    // socket yet; relaunching too early hits EADDRINUSE and the new process crashes
+    // while we've already reported success. Poll (bounded) until the port is free.
     await new Promise(r => setTimeout(r, 300));
+    const program = getProgramConfig(programId, config);
+    const expectedPort = program && program.env && (program.env.PORT || program.env.port);
+    if (expectedPort) {
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && await probePort(expectedPort)) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
 
     const result = startProgram(programId, config);
     res.json({ success: true, data: result });
@@ -1059,6 +1144,9 @@ function startProgram(programId, config) {
     appendProgramLog(programId, `[system] Process failed to start: ${err.message}`);
     proc.isRunning = false;
     if (proc.killTimer) { clearTimeout(proc.killTimer); proc.killTimer = null; }
+    // Only mutate shared state if this proc is still the registered one (see the
+    // exit handler below for the delete/re-add race this guards against).
+    if (processes.get(programId) !== proc) return;
     lastExit.set(programId, { code: null, signal: null, time: Date.now(), clean: false });
     processes.delete(programId);
     broadcastStatus();
@@ -1068,9 +1156,16 @@ function startProgram(programId, config) {
     const desc = signal ? `signal ${signal}` : `code ${code}`;
     appendProgramLog(programId, `[system] Process exited with ${desc}`);
 
-    // Mark as no longer running and clean up the registry + escalation timer.
+    // proc-local bookkeeping is always safe.
     proc.isRunning = false;
     if (proc.killTimer) { clearTimeout(proc.killTimer); proc.killTimer = null; }
+
+    // But only touch the shared registry/lastExit if THIS proc is still the one
+    // registered for the id. After a delete-then-re-add (same folder → same id),
+    // a slow old process exiting late must not evict or overwrite the newer live
+    // process — otherwise the manager would think the running program is gone.
+    if (processes.get(programId) !== proc) return;
+
     // A code-0 exit, or one we initiated via Stop, is clean; anything else is a
     // crash the UI should surface.
     lastExit.set(programId, {
@@ -1735,11 +1830,18 @@ app.delete('/api/programs/:id', requireApiToken, (req, res) => {
       });
     }
 
-    // Stop the program if it's running
+    // Stop the program if it's running. Use stopProgram() so we get the SIGTERM +
+    // 10s SIGKILL escalation, and DON'T drop the registry entry here while the
+    // child may still be alive: doing so would orphan the process (no handle left
+    // to force-kill it) and let a re-add of the same id race its exit handler. The
+    // identity-guarded exit handler removes the entry once the group truly exits.
     const proc = processes.get(programId);
-    if (proc && proc.isRunning) {
+    const stoppingRunning = Boolean(proc && proc.isRunning);
+    if (stoppingRunning) {
       console.log(`[manager] Stopping program before removal: ${programId}`);
-      signalProcessTree(proc, 'SIGTERM');
+      try { stopProgram(programId); } catch (_) { /* already gone */ }
+    } else {
+      processes.delete(programId);
     }
 
     // Remove from config
@@ -1756,9 +1858,9 @@ app.delete('/api/programs/:id', requireApiToken, (req, res) => {
     cachedConfig = null;
     cachedConfigMtimeMs = null;
 
-    // Clean up process logs
+    // Clean up process logs (keep the process entry if it's still shutting down;
+    // its exit handler will clean it up).
     processLogs.delete(programId);
-    processes.delete(programId);
 
     res.json({
       success: true,
@@ -1815,15 +1917,13 @@ async function startServer() {
 
   wss.on('connection', (ws, req) => {
     // Require the token for WebSocket clients when auth is enabled. The token is
-    // read from the `bearer.<base64url(token)>` subprotocol (browser-friendly),
-    // falling back to ?token= for non-browser clients. Same constant-time compare
-    // and brute-force throttle as the HTTP path.
+    // read ONLY from the `bearer.<base64url(token)>` subprotocol — never the query
+    // string, which would leak the secret into reverse-proxy/access logs (the HTTP
+    // path refuses ?token= for the same reason). Same constant-time compare and
+    // brute-force throttle as the HTTP path.
     if (API_TOKEN) {
       const ip = clientIp(req);
-      let token = decodeBearerSubprotocol(req.headers['sec-websocket-protocol']);
-      if (!token) {
-        try { token = new URL(req.url, 'http://localhost').searchParams.get('token'); } catch (_) { /* ignore */ }
-      }
+      const token = decodeBearerSubprotocol(req.headers['sec-websocket-protocol']);
       if (authIsBlocked(ip) || !tokenMatches(token)) {
         if (!authIsBlocked(ip)) recordAuthFailure(ip);
         ws.close(1008, 'Unauthorized');
@@ -1861,8 +1961,15 @@ async function startServer() {
       console.log('   To reach this from another device, set MANAGER_API_TOKEN and put it on a');
       console.log('   private network (Tailscale recommended). See the README "Remote access".');
     } else {
-      console.log('⚠️  No API token set but bound to all interfaces (MANAGER_ALLOW_NO_AUTH).');
-      console.log('   Anyone who can reach this port can run programs on this machine.');
+      const cause = process.env.MANAGER_HOST
+        ? `MANAGER_HOST=${process.env.MANAGER_HOST}`
+        : 'MANAGER_ALLOW_NO_AUTH';
+      console.log(`⚠️  No API token set but bound to ${BIND_HOST} (${cause}).`);
+      console.log('   Anyone who can reach this address can run programs on this machine.');
+      if (BIND_HOST === '0.0.0.0') {
+        console.log('   0.0.0.0 is ALL interfaces — this includes your LAN, not just Tailscale.');
+        console.log('   To restrict to Tailscale only, set MANAGER_HOST to your 100.x.y.z address.');
+      }
     }
 
     console.log('\nAccess the web interface at:');
@@ -1930,5 +2037,6 @@ module.exports = {
   parseListeningPortFromLog,
   isInsideProjectsDir,
   decodeBearerSubprotocol,
+  hostIsAllowed,
   sanitizeLogName
 };
