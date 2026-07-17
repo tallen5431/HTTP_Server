@@ -1,8 +1,18 @@
 // WebSocket connection
 let ws = null;
 let reconnectTimeout = null;
+// Set right before an intentional ws.close() (login/logout) so onclose doesn't
+// schedule a reconnect for a socket we closed on purpose.
+let intentionalClose = false;
 let currentPrograms = [];
 let searchQuery = '';
+
+// Close the active socket without triggering the auto-reconnect path.
+function closeWsIntentionally() {
+  if (!ws) return;
+  intentionalClose = true;
+  try { ws.close(); } catch (_) { /* ignore */ }
+}
 
 // ---------------------------------------------------------------------------
 // Authentication
@@ -95,7 +105,7 @@ function submitLogin(e) {
   closeLoginModal();
   updateAuthUi();
   // Reconnect the WebSocket and refetch everything with the new token.
-  if (ws) { try { ws.close(); } catch (_) { /* ignore */ } }
+  closeWsIntentionally();
   connectWebSocket();
   fetchPrograms();
   fetchDefaultBrowseDir();
@@ -106,7 +116,7 @@ function logout() {
   setApiToken('');
   updateAuthUi();
   stopAllLogPolling(); // stop tailers so they don't loop on 401 after sign-out
-  if (ws) { try { ws.close(); } catch (_) { /* ignore */ } }
+  closeWsIntentionally();
   showToast('Token cleared from this device', 'info', 2500);
   openLoginModal();
 }
@@ -236,6 +246,16 @@ function resolveProgramUrl(rawUrl, program = {}) {
   return `${base}/${path}`;
 }
 
+// Only http(s) URLs (or same-origin paths) are safe to put in an href or pass to
+// window.open — neutralize javascript:/data:/etc. Returns the URL or null.
+function safeHttpUrl(u) {
+  const s = String(u || '').trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.startsWith('/')) return s; // same-origin path
+  return null;
+}
+
 // Choose which of a program's addresses the Open button should launch, based on
 // where the manager is being viewed from: over Tailscale -> the Tailscale URL,
 // on the LAN -> the Local URL. Falls back to the legacy single `url`.
@@ -246,9 +266,9 @@ function pickBestUrl(program = {}) {
     const onTailscale = isTailscaleHostname(host) || host.startsWith('100.');
     const prefer = onTailscale ? 'tailscale' : 'local';
     const match = list.find(u => u.kind === prefer);
-    return (match || list[0]).url;
+    return safeHttpUrl((match || list[0]).url);
   }
-  return resolveProgramUrl(program.url, program);
+  return safeHttpUrl(resolveProgramUrl(program.url, program));
 }
 
 // DOM elements
@@ -276,15 +296,28 @@ function showToast(message, type = 'info', duration = 4000) {
     info: 'ℹ'
   };
 
-  toast.innerHTML = `
-    <div class="toast-icon">${icons[type] || icons.info}</div>
-    <div class="toast-content">
-      <div class="toast-message">${message}</div>
-    </div>
-    <button class="toast-close">✕</button>
-  `;
+  // Build with DOM APIs + textContent so an untrusted `message` (program names,
+  // server error strings, imported repo names) can never inject HTML/JS. Same
+  // reason addEnvVarRow() avoids innerHTML.
+  const iconEl = document.createElement('div');
+  iconEl.className = 'toast-icon';
+  iconEl.textContent = icons[type] || icons.info;
 
-  const closeBtn = toast.querySelector('.toast-close');
+  const contentEl = document.createElement('div');
+  contentEl.className = 'toast-content';
+  const messageEl = document.createElement('div');
+  messageEl.className = 'toast-message';
+  messageEl.textContent = message;
+  contentEl.appendChild(messageEl);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'toast-close';
+  closeBtn.textContent = '✕';
+
+  toast.appendChild(iconEl);
+  toast.appendChild(contentEl);
+  toast.appendChild(closeBtn);
+
   closeBtn.addEventListener('click', () => {
     toast.remove();
   });
@@ -321,6 +354,10 @@ function formatUptime(milliseconds) {
 
 // Connect to WebSocket
 function connectWebSocket() {
+  // Cancel any pending reconnect so we never end up with two live sockets.
+  if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
+  intentionalClose = false;
+
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}`;
 
@@ -362,6 +399,14 @@ function connectWebSocket() {
 
   ws.onclose = (event) => {
     console.log('WebSocket disconnected', event && event.code);
+
+    // We closed this socket on purpose (login/logout) and are already opening a
+    // fresh one — don't clobber the new socket's status or schedule a reconnect.
+    if (intentionalClose) {
+      intentionalClose = false;
+      return;
+    }
+
     wsStatus.classList.remove('connected');
     wsStatus.classList.add('disconnected');
     wsStatusText.textContent = 'Disconnected';
@@ -634,7 +679,7 @@ function updateProgramCard(card, program) {
       }
 
       const link = document.createElement('a');
-      link.href = entry.url;
+      link.href = safeHttpUrl(entry.url) || '#'; // neutralize non-http(s) schemes
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
       link.className = 'program-url';
@@ -714,6 +759,7 @@ async function startProgram(id, button) {
       showToast(`Failed to start: ${result.error}`, 'error');
     }
   } catch (error) {
+    if (error.message === 'Unauthorized' || error.message === 'Rate limited') return;
     console.error('Error starting program:', error);
     showToast('Failed to start program', 'error');
   } finally {
@@ -736,6 +782,7 @@ async function stopProgram(id, button) {
       showToast(`Failed to stop: ${result.error}`, 'error');
     }
   } catch (error) {
+    if (error.message === 'Unauthorized' || error.message === 'Rate limited') return;
     console.error('Error stopping program:', error);
     showToast('Failed to stop program', 'error');
   } finally {
@@ -758,6 +805,7 @@ async function restartProgram(id, button) {
       showToast(`Failed to restart: ${result.error}`, 'error');
     }
   } catch (error) {
+    if (error.message === 'Unauthorized' || error.message === 'Rate limited') return;
     console.error('Error restarting program:', error);
     showToast('Failed to restart program', 'error');
   } finally {
@@ -1223,6 +1271,7 @@ async function saveProgram(e) {
       showToast(`Failed: ${result.error}`, 'error');
     }
   } catch (error) {
+    if (error.message === 'Unauthorized' || error.message === 'Rate limited') return;
     console.error('Error saving program:', error);
     showToast('Failed to save program', 'error');
   }
@@ -1247,6 +1296,7 @@ async function deleteProgram(id, programName) {
       showToast(`Failed: ${result.error}`, 'error');
     }
   } catch (error) {
+    if (error.message === 'Unauthorized' || error.message === 'Rate limited') return;
     console.error('Error deleting program:', error);
     showToast('Failed to delete program', 'error');
   }
@@ -1289,7 +1339,12 @@ async function scanBrowseDir() {
     const data = await res.json();
 
     if (!data.success) {
-      list.innerHTML = '<div class="browser-empty">Error: ' + data.error + '</div>';
+      // textContent, not innerHTML — data.error can reflect the operator-typed
+      // path (e.g. "Directory not found: <...>") and must not render as HTML.
+      const errEl = document.createElement('div');
+      errEl.className = 'browser-empty';
+      errEl.textContent = 'Error: ' + data.error;
+      list.replaceChildren(errEl);
       return;
     }
 
