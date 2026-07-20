@@ -1285,8 +1285,17 @@ async function deleteProgram(id, programName) {
     return;
   }
 
+  // Opt-in second step: also delete the files from disk. Defaults to NO (Cancel),
+  // so an accidental OK on the first dialog never deletes anything on disk.
+  const removeFiles = confirm(
+    `Also delete "${programName}"'s files from disk?\n\n` +
+    `OK  — delete the folder too (needed to re-import a different repo under this ` +
+    `name; otherwise the folder stays and Rediscover can bring the program back).\n` +
+    `Cancel — keep the files, just remove it from the manager.`
+  );
+
   try {
-    const response = await api(`/api/programs/${id}`, {
+    const response = await api(`/api/programs/${id}?removeFiles=${removeFiles ? 1 : 0}`, {
       method: 'DELETE'
     });
 

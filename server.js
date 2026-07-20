@@ -115,6 +115,10 @@ const processes = new Map();
 const processLogs = new Map();
 // Why each program last stopped, so the UI can tell a clean stop from a crash.
 const lastExit = new Map(); // programId -> { code, signal, time, clean }
+// Destination paths with an import/update in flight, so two concurrent imports of
+// the same folder can't race (one clone's failure-cleanup deleting the other's
+// fresh checkout, or colliding on git's index.lock).
+const importsInFlight = new Set();
 
 // Load configuration (cached with mtime check)
 let cachedConfig = null;
@@ -1536,7 +1540,7 @@ async function cloneOrUpdateRepo(repoUrl, destPath, branch) {
   if (originUrl && normalizeRepoUrlForCompare(originUrl) !== normalizeRepoUrlForCompare(repoUrl)) {
     throw new Error(
       `A different repository is already imported under this name (origin ${sanitizeGitOutput(originUrl)}). ` +
-      'Choose a different folder name to import this URL.'
+      'Choose a different folder name, or delete the existing program (with "remove files") first.'
     );
   }
 
@@ -1628,8 +1632,18 @@ function detectImportRuntime(projectPath) {
 // to running the script directly when it self-serves or the framework is unknown.
 function buildPythonLaunch({ pyEntry, pyHay, entrySrc, hasManage }) {
   const moduleName = pyEntry.replace(/\.py$/i, '');
-  const appMatch = entrySrc.match(/^\s*([A-Za-z_]\w*)\s*=\s*(?:FastAPI|Flask|Quart|Starlette|Sanic|Bottle)\s*\(/m);
-  const appVar = appMatch ? appMatch[1] : 'app';
+  // Detect the app/ASGI/WSGI callable's name so the launcher targets the right
+  // object. Prefer an explicit framework constructor (`api = FastAPI()`); fall
+  // back to a bare `application =`/`app =` module-level assignment (the WSGI
+  // convention is `application`). Default to `app` when nothing is found.
+  let appVar = 'app';
+  const ctorMatch = entrySrc.match(/^\s*([A-Za-z_]\w*)\s*=\s*(?:FastAPI|Flask|Quart|Starlette|Sanic|Bottle)\s*\(/m);
+  if (ctorMatch) {
+    appVar = ctorMatch[1];
+  } else {
+    const asnMatch = entrySrc.match(/^\s*(application|app)\s*=/m);
+    if (asnMatch) appVar = asnMatch[1];
+  }
   const selfServes = /if\s+__name__\s*==\s*['"]__main__['"]/.test(entrySrc) &&
     /\.run\s*\(|run_simple|serve_forever|uvicorn\.run|\.serve\s*\(|make_server|httpd/i.test(entrySrc);
 
@@ -1646,7 +1660,8 @@ function buildPythonLaunch({ pyEntry, pyHay, entrySrc, hasManage }) {
     return `exec "$VENV_PY" -m uvicorn "${moduleName}:${appVar}" --host "$HOST" --port "$PORT"`;
   }
   if (/\bflask\b/.test(pyHay)) {
-    return `exec "$VENV_PY" -m flask --app "${moduleName}" run --host "$HOST" --port "$PORT"`;
+    // Use module:callable so a Flask instance not named `app` is still found.
+    return `exec "$VENV_PY" -m flask --app "${moduleName}:${appVar}" run --host "$HOST" --port "$PORT"`;
   }
   if (/\bgunicorn\b/.test(pyHay)) {
     return `exec "$VENV_PY" -m gunicorn "${moduleName}:${appVar}" --bind "$HOST:$PORT"`;
@@ -1668,7 +1683,18 @@ function scaffoldStartScript(projectPath) {
   const kind = info.kind;
 
   if (kind === 'node') {
-    const install = info.hasPkg ? '[ -d node_modules ] || npm install' : '# (no package.json — nothing to install)';
+    // Install on first run AND whenever the manifest changed — a plain
+    // `[ -d node_modules ] || npm install` never reinstalls after a git update,
+    // so an updated program would be tested against stale dependencies.
+    const install = info.hasPkg
+      ? [
+          '# Install deps on first run and whenever package.json/lock changed (e.g. after a git update).',
+          'if [ ! -d node_modules ] || [ package.json -nt node_modules ] || { [ -f package-lock.json ] && [ package-lock.json -nt node_modules ]; }; then',
+          '  echo "[SETUP] Installing npm dependencies..."',
+          '  npm install',
+          'fi'
+        ].join('\n')
+      : '# (no package.json — nothing to install)';
     const launch = info.nodeStart ? 'exec npm start' : `exec node "${info.nodeEntry}"`;
     body = [
       '#!/usr/bin/env bash',
@@ -1701,10 +1727,15 @@ function scaffoldStartScript(projectPath) {
       '  "$SYS_PY" -m venv "$APP_DIR/.venv"',
       'fi',
       '',
-      'if [[ -f requirements.txt ]]; then',
+      '# Install requirements on first run and whenever requirements.txt changed',
+      '# (e.g. after a git update) — a stamp file avoids a slow reinstall on every',
+      '# unchanged repeat start, while still picking up dependency updates.',
+      'REQ_STAMP="$APP_DIR/.venv/.requirements-installed"',
+      'if [[ -f requirements.txt && ( ! -f "$REQ_STAMP" || requirements.txt -nt "$REQ_STAMP" ) ]]; then',
       '  echo "[SETUP] Installing requirements..."',
       '  "$VENV_PY" -m pip install --upgrade pip >/dev/null',
       '  "$VENV_PY" -m pip install -r requirements.txt',
+      '  touch "$REQ_STAMP"',
       'fi',
       '',
       'export HOST="${HOST:-0.0.0.0}"',
@@ -1888,58 +1919,90 @@ app.post('/api/import-repo', requireApiToken, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid destination path.' });
     }
 
-    // If this is an update (the folder is already a git repo) and the program is
-    // currently running, stop it first: `reset --hard` rewrites files underneath a
-    // live process, which can leave a half-updated, corrupted runtime.
-    let stoppedForUpdate = false;
-    if (fs.existsSync(path.join(resolvedDest, '.git'))) {
-      try {
-        const cfg = loadConfig();
-        const running = (cfg.programs || []).find(p =>
-          path.resolve(p.path) === resolvedDest && processes.get(p.id) && processes.get(p.id).isRunning
-        );
-        if (running) {
-          console.log(`[manager] Stopping running program ${running.id} before update`);
-          await stopProgramAndWait(running.id);
-          stoppedForUpdate = true;
+    // Serialize concurrent imports to the SAME folder: two at once could race —
+    // one request's failure-cleanup rmSync deleting the other's fresh clone, or
+    // colliding on git's index.lock. Imports to different folders still run freely.
+    if (importsInFlight.has(resolvedDest)) {
+      return res.status(409).json({
+        success: false,
+        error: 'An import for this program is already in progress. Try again in a moment.'
+      });
+    }
+    importsInFlight.add(resolvedDest);
+
+    try {
+      // If this is an update (the folder is already a git repo) and the program is
+      // currently running, stop it first: `reset --hard` rewrites files underneath a
+      // live process, which can leave a half-updated, corrupted runtime. Remember it
+      // was running so we can bring it back on the updated code afterward.
+      let runningId = null;
+      if (fs.existsSync(path.join(resolvedDest, '.git'))) {
+        try {
+          const cfg = loadConfig();
+          const running = (cfg.programs || []).find(p =>
+            path.resolve(p.path) === resolvedDest && processes.get(p.id) && processes.get(p.id).isRunning
+          );
+          if (running) {
+            runningId = running.id;
+            console.log(`[manager] Stopping running program ${running.id} before update`);
+            await stopProgramAndWait(running.id);
+          }
+        } catch (_) { /* best effort — proceed with the update either way */ }
+      }
+
+      console.log(`[manager] Importing ${repoUrl} -> ${resolvedDest}`);
+      const cloneResult = await cloneOrUpdateRepo(String(repoUrl).trim(), resolvedDest, cleanBranch);
+
+      // Make sure the manager can actually launch it.
+      const scaffold = scaffoldStartScript(resolvedDest);
+
+      // Regenerate config so the new project appears in the UI.
+      const projects = runRediscovery(PROJECTS_DIR);
+      const imported = projects.find(p => path.resolve(p.path) === resolvedDest) || null;
+
+      // If we stopped a running program to update it, bring it back up on the new
+      // code so update-and-retest stays a single action. Only on update (it was
+      // already running with a working Start.sh) — never on a first clone.
+      let restarted = false;
+      if (runningId && imported) {
+        try {
+          startProgram(imported.id, loadConfig());
+          restarted = true;
+        } catch (err) {
+          console.error(`[manager] Auto-restart after update failed: ${err.message}`);
         }
-      } catch (_) { /* best effort — proceed with the update either way */ }
+      }
+
+      const bits = [`${cloneResult.updated ? 'Updated' : 'Cloned'} ${folderName}`];
+      if (scaffold.created) {
+        bits.push(scaffold.kind === 'placeholder'
+          ? 'no launch command detected — edit the generated Start.sh before starting'
+          : `generated a ${scaffold.kind} Start.sh — review it before starting`);
+      }
+      if (restarted) {
+        bits.push('restarted it with the updated version');
+      } else if (runningId) {
+        bits.push('stopped the running program — start it again when ready');
+      }
+      if (!imported) {
+        bits.push('not yet runnable (no Start.sh detected)');
+      }
+
+      res.json({
+        success: true,
+        action: cloneResult.updated ? 'updated' : 'cloned',
+        folderName,
+        path: resolvedDest,
+        program: imported,
+        scaffolded: scaffold.created ? scaffold.kind : null,
+        restarted,
+        message: bits.join(' — ')
+      });
+
+      setTimeout(() => broadcastStatus(), 500);
+    } finally {
+      importsInFlight.delete(resolvedDest);
     }
-
-    console.log(`[manager] Importing ${repoUrl} -> ${resolvedDest}`);
-    const cloneResult = await cloneOrUpdateRepo(String(repoUrl).trim(), resolvedDest, cleanBranch);
-
-    // Make sure the manager can actually launch it.
-    const scaffold = scaffoldStartScript(resolvedDest);
-
-    // Regenerate config so the new project appears in the UI.
-    const projects = runRediscovery(PROJECTS_DIR);
-    const imported = projects.find(p => path.resolve(p.path) === resolvedDest) || null;
-
-    const bits = [`${cloneResult.updated ? 'Updated' : 'Cloned'} ${folderName}`];
-    if (scaffold.created) {
-      bits.push(scaffold.kind === 'placeholder'
-        ? 'no launch command detected — edit the generated Start.sh before starting'
-        : `generated a ${scaffold.kind} Start.sh — review it before starting`);
-    }
-    if (stoppedForUpdate) {
-      bits.push('stopped the running program to update it — start it again when ready');
-    }
-    if (!imported) {
-      bits.push('not yet runnable (no Start.sh detected)');
-    }
-
-    res.json({
-      success: true,
-      action: cloneResult.updated ? 'updated' : 'cloned',
-      folderName,
-      path: resolvedDest,
-      program: imported,
-      scaffolded: scaffold.created ? scaffold.kind : null,
-      message: bits.join(' — ')
-    });
-
-    setTimeout(() => broadcastStatus(), 500);
   } catch (err) {
     console.error('[manager] Import failed:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -2107,11 +2170,19 @@ app.post('/api/programs', requireApiToken, (req, res) => {
   }
 });
 
-app.delete('/api/programs/:id', requireApiToken, (req, res) => {
+app.delete('/api/programs/:id', requireApiToken, async (req, res) => {
   try {
     const programId = req.params.id;
 
-    console.log(`[manager] Removing program: ${programId}`);
+    // Opt-in: also delete the program's folder from disk. Default OFF, so a plain
+    // delete still only removes the config entry (unchanged behavior). Without
+    // this, a deleted program's folder lingers and the next Import/Rediscover
+    // resurrects it — and a different repo can't be imported under the same name.
+    const removeFilesRaw = (req.body && req.body.removeFiles) != null
+      ? req.body.removeFiles : (req.query.removeFiles || '');
+    const removeFiles = /^(1|true|yes)$/i.test(String(removeFilesRaw));
+
+    console.log(`[manager] Removing program: ${programId}${removeFiles ? ' (with files)' : ''}`);
 
     const config = loadConfig();
     const programIndex = config.programs.findIndex(p => p.id === programId);
@@ -2123,16 +2194,42 @@ app.delete('/api/programs/:id', requireApiToken, (req, res) => {
       });
     }
 
+    const programPath = config.programs[programIndex].path;
+
+    // Decide up front whether files may be removed, so we can refuse clearly.
+    // Confine deletion to a *subfolder* of PROJECTS_DIR — never an external path
+    // (even with MANAGER_ALLOW_EXTERNAL_PATHS) and never the projects root itself,
+    // so a leaked token or bad id can't rm arbitrary directories.
+    let willRemoveFiles = false;
+    if (removeFiles) {
+      const resolved = programPath ? path.resolve(programPath) : '';
+      const isSubfolder = programPath && isInsideProjectsDir(programPath) &&
+        resolved !== path.resolve(PROJECTS_DIR);
+      if (!isSubfolder) {
+        return res.status(400).json({
+          success: false,
+          error: 'Refusing to delete files outside the projects folder. Remove the config entry only, or delete the folder manually.'
+        });
+      }
+      willRemoveFiles = fs.existsSync(programPath);
+    }
+
     // Stop the program if it's running. Use stopProgram() so we get the SIGTERM +
     // 10s SIGKILL escalation, and DON'T drop the registry entry here while the
     // child may still be alive: doing so would orphan the process (no handle left
     // to force-kill it) and let a re-add of the same id race its exit handler. The
     // identity-guarded exit handler removes the entry once the group truly exits.
+    // When we're about to delete files, wait for the group to actually exit first —
+    // removing files from under a live process leaves a corrupt half-deleted tree.
     const proc = processes.get(programId);
     const stoppingRunning = Boolean(proc && proc.isRunning);
     if (stoppingRunning) {
       console.log(`[manager] Stopping program before removal: ${programId}`);
-      try { stopProgram(programId); } catch (_) { /* already gone */ }
+      if (willRemoveFiles) {
+        await stopProgramAndWait(programId);
+      } else {
+        try { stopProgram(programId); } catch (_) { /* already gone */ }
+      }
     } else {
       processes.delete(programId);
     }
@@ -2155,9 +2252,22 @@ app.delete('/api/programs/:id', requireApiToken, (req, res) => {
     // its exit handler will clean it up).
     processLogs.delete(programId);
 
+    // Remove the folder last — after the config is updated and the process exited.
+    let filesRemoved = false;
+    if (willRemoveFiles) {
+      try {
+        fs.rmSync(programPath, { recursive: true, force: true });
+        filesRemoved = true;
+        console.log(`[manager] Deleted program folder: ${programPath}`);
+      } catch (err) {
+        console.error(`[manager] Failed to delete folder ${programPath}: ${err.message}`);
+      }
+    }
+
     res.json({
       success: true,
-      message: `Program ${programId} removed successfully`
+      filesRemoved,
+      message: `Program ${programId} removed${filesRemoved ? ' (files deleted)' : ''} successfully`
     });
 
     // Broadcast updated status

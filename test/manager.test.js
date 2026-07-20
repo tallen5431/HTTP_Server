@@ -307,7 +307,7 @@ test('scaffoldStartScript: prefers the Python backend over an incidental package
     const r = server.scaffoldStartScript(dir);
     assert.strictEqual(r.kind, 'python');
     const body = fs.readFileSync(path.join(dir, 'Start.sh'), 'utf8');
-    assert.match(body, /flask --app "app" run/);
+    assert.match(body, /flask --app "app:app" run/);
     assert.doesNotMatch(body, /npm start/);
   });
 });
@@ -350,6 +350,41 @@ test('scaffoldStartScript: a self-serving python script is run directly', () => 
     server.scaffoldStartScript(dir);
     const body = fs.readFileSync(path.join(dir, 'Start.sh'), 'utf8');
     assert.match(body, /exec "\$VENV_PY" "app\.py"/);
+  });
+});
+
+test('scaffoldStartScript: Node install is gated on manifest freshness (picks up updated deps)', () => {
+  withTempProject({ 'package.json': JSON.stringify({ scripts: { start: 'node s.js' } }), 's.js': '1' }, (dir) => {
+    server.scaffoldStartScript(dir);
+    const body = fs.readFileSync(path.join(dir, 'Start.sh'), 'utf8');
+    assert.match(body, /package\.json -nt node_modules/);
+    assert.doesNotMatch(body, /\[ -d node_modules \] \|\| npm install/); // the old stale-forever form
+  });
+});
+
+test('scaffoldStartScript: Python reinstalls only when requirements.txt changed (stamp-gated)', () => {
+  withTempProject({ 'requirements.txt': 'flask\n', 'app.py': 'from flask import Flask\napp=Flask(__name__)\n' }, (dir) => {
+    server.scaffoldStartScript(dir);
+    const body = fs.readFileSync(path.join(dir, 'Start.sh'), 'utf8');
+    assert.match(body, /REQ_STAMP=/);
+    assert.match(body, /requirements\.txt -nt "\$REQ_STAMP"/);
+  });
+});
+
+test('scaffoldStartScript: Flask launcher targets the detected app-instance variable', () => {
+  withTempProject({ 'requirements.txt': 'flask\n', 'app.py': 'from flask import Flask\nsrv = Flask(__name__)\n' }, (dir) => {
+    server.scaffoldStartScript(dir);
+    const body = fs.readFileSync(path.join(dir, 'Start.sh'), 'utf8');
+    assert.match(body, /--app "app:srv" run/);
+  });
+});
+
+test('scaffoldStartScript: gunicorn/WSGI callable is detected as `application`', () => {
+  withTempProject({ 'requirements.txt': 'gunicorn\n', 'wsgi.py': 'application = make_app()\n' }, (dir) => {
+    const r = server.scaffoldStartScript(dir);
+    assert.strictEqual(r.kind, 'python');
+    const body = fs.readFileSync(path.join(dir, 'Start.sh'), 'utf8');
+    assert.match(body, /gunicorn "wsgi:application"/);
   });
 });
 
