@@ -187,6 +187,15 @@ function loadConfig() {
   }
 }
 
+// Return a deep, disposable copy of the current config. loadConfig() hands out the
+// shared cachedConfig by reference, so a handler that mutates it in place and then
+// hits a validation/write error would leave the cached (live) config half-updated
+// until the file mtime next changes. Mutating handlers work on a clone instead and
+// only clear the cache after a successful write.
+function loadConfigMutable() {
+  return JSON.parse(JSON.stringify(loadConfig()));
+}
+
 // Keep at most this many config.json.backup.* files so they don't pile up.
 const MAX_CONFIG_BACKUPS = 5;
 
@@ -834,6 +843,9 @@ app.use(express.static('public'));
 // endpoints leak filesystem paths, env-var secrets, and program output, so
 // "reads are harmless" does not hold here. /api/health stays open so an external
 // uptime monitor can poll liveness without a credential.
+//
+// This is the single enforcement point for API auth: because it runs before every
+// /api route handler, the individual routes do NOT repeat requireApiToken.
 app.use('/api', (req, res, next) => {
   if (req.path === '/health') return next();
   return requireApiToken(req, res, next);
@@ -900,6 +912,16 @@ function authIsBlocked(ip) {
 
 function recordAuthFailure(ip) {
   const now = Date.now();
+  // Opportunistically evict stale records (window elapsed and not actively
+  // blocked) so a client rotating source IPs can't grow this map without bound.
+  // Volume here is already throttled, so the occasional O(n) sweep is cheap.
+  if (authFailures.size > 64) {
+    for (const [key, r] of authFailures) {
+      if ((!r.blockedUntil || r.blockedUntil <= now) && now - r.first > AUTH_WINDOW_MS) {
+        authFailures.delete(key);
+      }
+    }
+  }
   let rec = authFailures.get(ip);
   if (!rec || now - rec.first > AUTH_WINDOW_MS) {
     rec = { count: 0, first: now, blockedUntil: 0 };
@@ -954,7 +976,7 @@ app.get('/api/programs', (req, res) => {
   res.json(status);
 });
 
-app.post('/api/programs/:id/start', requireApiToken, (req, res) => {
+app.post('/api/programs/:id/start', (req, res) => {
   try {
     const config = loadConfig();
     const result = startProgram(req.params.id, config);
@@ -966,7 +988,7 @@ app.post('/api/programs/:id/start', requireApiToken, (req, res) => {
   }
 });
 
-app.post('/api/programs/:id/stop', requireApiToken, (req, res) => {
+app.post('/api/programs/:id/stop', (req, res) => {
   try {
     const result = stopProgram(req.params.id);
     res.json({ success: true, data: result });
@@ -977,7 +999,7 @@ app.post('/api/programs/:id/stop', requireApiToken, (req, res) => {
   }
 });
 
-app.post('/api/programs/:id/restart', requireApiToken, async (req, res) => {
+app.post('/api/programs/:id/restart', async (req, res) => {
   const programId = req.params.id;
   try {
     const config = loadConfig();
@@ -998,7 +1020,10 @@ app.post('/api/programs/:id/restart', requireApiToken, async (req, res) => {
 });
 
 app.get('/api/programs/:id/logs', (req, res) => {
-  const lines = parseInt(req.query.lines) || 100;
+  // Clamp to a positive count. A negative value would otherwise flip the tail
+  // slice: getProgramLogs does logs.slice(-lines), so lines=-5 → slice(5), which
+  // drops the FIRST 5 lines instead of returning the last 5.
+  const lines = Math.max(1, parseInt(req.query.lines, 10) || 100);
   const logs = getProgramLogs(req.params.id, lines);
   res.json(logs);
 });
@@ -1058,8 +1083,13 @@ function parseListeningPortFromLog(line) {
 
   const isLocalBind = (host) => {
     const h = host.toLowerCase();
+    // Match only real RFC1918 private ranges. A bare `192.`/`172.` prefix also
+    // matches public addresses (e.g. 192.0.2.x, 172.217.x.x), which would make an
+    // unrelated public URL logged on a non-startup line look like a local bind.
     return h === '0.0.0.0' || h === '127.0.0.1' || h === 'localhost' ||
-      h === '[::]' || h === '[::1]' || /^(?:10|127|192|172)\./.test(h);
+      h === '[::]' || h === '[::1]' ||
+      /^10\./.test(h) || /^127\./.test(h) || /^192\.168\./.test(h) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(h);
   };
 
   // 1. A full URL is the most reliable signal: http(s)://host:PORT
@@ -1209,6 +1239,18 @@ function startProgram(programId, config) {
       clean: code === 0 || proc.stoppedByUser === true
     });
     processes.delete(programId);
+
+    // If the program was removed from config while it was shutting down (a
+    // delete-while-running without "remove files" doesn't wait for the exit), the
+    // appendProgramLog above just re-created its in-memory log buffer. Drop that
+    // and the crash record so they don't linger for the manager's lifetime.
+    try {
+      const cfg = getConfigSafe();
+      if (!cfg || !cfg.programs.some(p => p.id === programId)) {
+        processLogs.delete(programId);
+        lastExit.delete(programId);
+      }
+    } catch (_) { /* best effort */ }
 
     broadcastStatus();
   });
@@ -1828,8 +1870,11 @@ app.get('/api/browse-projects', (req, res) => {
   }
 
   try {
-    const { parseStartScript, discoverProjects } = require('./discover-projects');
+    const { parseStartScript } = require('./discover-projects');
     const entries = fs.readdirSync(dir, { withFileTypes: true });
+    // Load config once up front rather than re-reading it for every directory
+    // entry; it's the same snapshot for the whole scan.
+    const config = loadConfig();
     const results = [];
 
     for (const entry of entries) {
@@ -1851,7 +1896,6 @@ app.get('/api/browse-projects', (req, res) => {
       const id = entry.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
 
       // Check if already in config
-      const config = loadConfig();
       const alreadyAdded = config.programs.some(p => p.path === projectPath);
 
       results.push({ id, name: displayName, path: projectPath, env, alreadyAdded });
@@ -1865,7 +1909,7 @@ app.get('/api/browse-projects', (req, res) => {
 });
 
 // Rediscover projects and regenerate config
-app.post('/api/rediscover', requireApiToken, (req, res) => {
+app.post('/api/rediscover', (req, res) => {
   console.log('[manager] Rediscovery requested via /api/rediscover');
 
   try {
@@ -1892,7 +1936,7 @@ app.post('/api/rediscover', requireApiToken, (req, res) => {
 // Import a program from a git repository: clone it into the projects folder,
 // scaffold a Start.sh if the repo doesn't ship one, then rediscover so it shows
 // up in the manager. Cloning uses spawn(git, [...]) — never a shell string.
-app.post('/api/import-repo', requireApiToken, async (req, res) => {
+app.post('/api/import-repo', async (req, res) => {
   try {
     const { repoUrl, branch, name } = req.body || {};
 
@@ -2014,7 +2058,7 @@ app.post('/api/import-repo', requireApiToken, async (req, res) => {
 });
 
 // Restart manager endpoint
-app.post('/api/restart-manager', requireApiToken, (req, res) => {
+app.post('/api/restart-manager', (req, res) => {
   console.log('[manager] Restart requested via /api/restart-manager');
 
   res.json({
@@ -2040,14 +2084,16 @@ app.post('/api/restart-manager', requireApiToken, (req, res) => {
 });
 
 // Config editing endpoints
-app.put('/api/programs/:id', requireApiToken, (req, res) => {
+app.put('/api/programs/:id', (req, res) => {
   try {
     const programId = req.params.id;
     const updates = req.body;
 
     console.log(`[manager] Updating program: ${programId}`);
 
-    const config = loadConfig();
+    // Work on a clone: a validation failure below must not leave the shared cached
+    // config half-updated (e.g. name set to "" before validateConfig throws).
+    const config = loadConfigMutable();
     const programIndex = config.programs.findIndex(p => p.id === programId);
 
     if (programIndex === -1) {
@@ -2104,7 +2150,7 @@ app.put('/api/programs/:id', requireApiToken, (req, res) => {
   }
 });
 
-app.post('/api/programs', requireApiToken, (req, res) => {
+app.post('/api/programs', (req, res) => {
   try {
     const newProgram = req.body;
 
@@ -2125,7 +2171,9 @@ app.post('/api/programs', requireApiToken, (req, res) => {
       });
     }
 
-    const config = loadConfig();
+    // Work on a clone so a validation/write failure below can't leave a phantom
+    // program in the shared cached config.
+    const config = loadConfigMutable();
 
     // Check for duplicate ID
     if (config.programs.find(p => p.id === newProgram.id)) {
@@ -2174,7 +2222,7 @@ app.post('/api/programs', requireApiToken, (req, res) => {
   }
 });
 
-app.delete('/api/programs/:id', requireApiToken, async (req, res) => {
+app.delete('/api/programs/:id', async (req, res) => {
   try {
     const programId = req.params.id;
 
@@ -2238,14 +2286,21 @@ app.delete('/api/programs/:id', requireApiToken, async (req, res) => {
       processes.delete(programId);
     }
 
-    // Remove from config
-    config.programs.splice(programIndex, 1);
+    // Re-load the config from disk AFTER the (possibly long) shutdown wait above,
+    // then re-find the entry. The earlier snapshot and index can be stale — a
+    // concurrent add/edit in another tab may have rewritten config.json while we
+    // waited — and splicing at the old index would clobber that change.
+    const freshConfig = loadConfigMutable();
+    const freshIndex = freshConfig.programs.findIndex(p => p.id === programId);
+    if (freshIndex !== -1) {
+      freshConfig.programs.splice(freshIndex, 1);
+    }
 
     // Backup existing config
     backupConfigFile();
 
     // Save updated config
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(freshConfig, null, 2), 'utf8');
     console.log(`[manager] Removed program: ${programId}`);
 
     // Clear cache
@@ -2253,8 +2308,9 @@ app.delete('/api/programs/:id', requireApiToken, async (req, res) => {
     cachedConfigMtimeMs = null;
 
     // Clean up process logs (keep the process entry if it's still shutting down;
-    // its exit handler will clean it up).
+    // its exit handler will clean it up) and any recorded crash state.
     processLogs.delete(programId);
+    lastExit.delete(programId);
 
     // Remove the folder last — after the config is updated and the process exited.
     let filesRemoved = false;
@@ -2414,11 +2470,6 @@ async function startServer() {
   process.on('SIGINT', () => {
     console.log('\nShutting down server...');
 
-    server.close(() => {
-      console.log('Server stopped');
-      process.exit(0);
-    });
-
     // Kill all running child processes (whole group each, so nothing is orphaned)
     for (const [id, proc] of processes.entries()) {
       if (proc.isRunning) {
@@ -2426,6 +2477,23 @@ async function startServer() {
         signalProcessTree(proc, 'SIGTERM');
       }
     }
+
+    // Tear down live WebSocket connections first. server.close() waits for all
+    // open connections to end before firing its callback, and an upgraded
+    // WebSocket is a long-lived socket — leaving even one open meant the callback
+    // (and the process.exit inside it) never ran, hanging shutdown indefinitely.
+    for (const client of wsClients) {
+      try { client.terminate(); } catch (_) { /* ignore */ }
+    }
+    try { wss.close(); } catch (_) { /* ignore */ }
+
+    server.close(() => {
+      console.log('Server stopped');
+      process.exit(0);
+    });
+
+    // Fallback so shutdown can never hang if a connection refuses to close in time.
+    setTimeout(() => process.exit(0), 3000).unref();
   });
 }
 

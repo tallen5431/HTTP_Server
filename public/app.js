@@ -1,17 +1,19 @@
 // WebSocket connection
 let ws = null;
 let reconnectTimeout = null;
-// Set right before an intentional ws.close() (login/logout) so onclose doesn't
-// schedule a reconnect for a socket we closed on purpose.
-let intentionalClose = false;
 let currentPrograms = [];
 let searchQuery = '';
 
-// Close the active socket without triggering the auto-reconnect path.
+// Close the active socket without triggering the auto-reconnect path. We detach
+// `ws` FIRST so the closing socket's onclose sees `socket !== ws` and does nothing
+// (no "Disconnected" flash, no scheduled reconnect). This lets login/logout
+// close-then-reconnect without the old socket's async onclose later orphaning the
+// fresh one — the bug of ending up with two live sockets.
 function closeWsIntentionally() {
   if (!ws) return;
-  intentionalClose = true;
-  try { ws.close(); } catch (_) { /* ignore */ }
+  const socket = ws;
+  ws = null;
+  try { socket.close(); } catch (_) { /* ignore */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -354,9 +356,10 @@ function formatUptime(milliseconds) {
 
 // Connect to WebSocket
 function connectWebSocket() {
-  // Cancel any pending reconnect so we never end up with two live sockets.
+  // Cancel any pending reconnect and close any existing socket so we never end up
+  // with two live sockets.
   if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
-  intentionalClose = false;
+  closeWsIntentionally();
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}`;
@@ -365,47 +368,47 @@ function connectWebSocket() {
   const protocols = ['manager'];
   if (apiToken) protocols.push('bearer.' + base64url(apiToken));
 
+  let socket;
   try {
-    ws = new WebSocket(wsUrl, protocols);
+    socket = new WebSocket(wsUrl, protocols);
   } catch (err) {
     console.error('WebSocket construction failed:', err);
     return;
   }
+  ws = socket;
 
-  ws.onopen = () => {
+  // Every handler below is guarded by `socket !== ws`: once this socket has been
+  // superseded (by a reconnect, or a login/logout close), its late-firing events
+  // must not touch the UI or schedule work for the socket that replaced it.
+  socket.onopen = () => {
+    if (socket !== ws) return;
     console.log('WebSocket connected');
     wsStatus.classList.add('connected');
     wsStatus.classList.remove('disconnected');
     wsStatusText.textContent = 'Connected';
     updateConnectionIndicator();
-
-    if (reconnectTimeout) {
-      clearTimeout(reconnectTimeout);
-      reconnectTimeout = null;
-    }
   };
 
-  ws.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-
+  socket.onmessage = (event) => {
+    if (socket !== ws) return;
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch (_) {
+      return; // ignore a malformed/partial frame rather than throwing in the handler
+    }
     if (message.type === 'status') {
       updateProgramsDisplay(message.data);
     }
   };
 
-  ws.onerror = (error) => {
+  socket.onerror = (error) => {
     console.error('WebSocket error:', error);
   };
 
-  ws.onclose = (event) => {
+  socket.onclose = (event) => {
+    if (socket !== ws) return; // a socket we already replaced — stay silent
     console.log('WebSocket disconnected', event && event.code);
-
-    // We closed this socket on purpose (login/logout) and are already opening a
-    // fresh one — don't clobber the new socket's status or schedule a reconnect.
-    if (intentionalClose) {
-      intentionalClose = false;
-      return;
-    }
 
     wsStatus.classList.remove('connected');
     wsStatus.classList.add('disconnected');
@@ -414,11 +417,13 @@ function connectWebSocket() {
     // 1008 = policy violation = auth rejected. Prompt for the token rather than
     // reconnecting in a loop with the same bad credential.
     if (event && event.code === 1008) {
+      ws = null;
       openLoginModal(true);
       return;
     }
 
     // Attempt to reconnect after 3 seconds
+    ws = null;
     reconnectTimeout = setTimeout(connectWebSocket, 3000);
   };
 }
@@ -442,6 +447,10 @@ function updateProgramsDisplay(programs) {
 
   if (!programs || programs.length === 0) {
     stopAllLogPolling(); // no programs left — don't leave tailers running
+    // Clear any leftover cards. Without this they linger detached-but-present and
+    // filterPrograms() (which un-hides the grid whenever the search box is empty)
+    // would resurrect cards for programs that no longer exist.
+    programsGrid.replaceChildren();
     programsGrid.classList.add('hidden');
     emptyState.classList.remove('hidden');
     noResults.classList.add('hidden');
@@ -453,7 +462,10 @@ function updateProgramsDisplay(programs) {
 
   // Update existing cards or create new ones
   programs.forEach(program => {
-    let card = document.querySelector(`[data-program-id="${program.id}"]`);
+    // CSS.escape the id: rediscover/import derive ids from folder/repo names on
+    // the server, which aren't guaranteed to be selector-safe. An unescaped id
+    // with a quote/backslash would throw and abort the whole render pass.
+    let card = document.querySelector(`[data-program-id="${CSS.escape(program.id)}"]`);
 
     if (!card) {
       card = createProgramCard(program);
@@ -881,6 +893,12 @@ async function setAutostart(id, enabled, toggleEl) {
 async function loadLogs(id, card) {
   const logsContent = card.querySelector('.logs-content');
 
+  // Only auto-stick to the bottom when the reader is already near it. Otherwise a
+  // 2.5s tail refresh would keep yanking them back down while they scroll up to
+  // read earlier output. (On first open the panel isn't scrolled, so this is true.)
+  const nearBottom =
+    logsContent.scrollHeight - logsContent.scrollTop - logsContent.clientHeight < 40;
+
   try {
     const response = await api(`/api/programs/${id}/logs?lines=100`);
     const logs = await response.json();
@@ -892,8 +910,7 @@ async function loadLogs(id, card) {
       const fullText = logs.map(log => `${log.time} ${log.text}`).join('\n');
       logsContent.textContent = fullText;
       logsContent.setAttribute('data-full-logs', fullText);
-      // Scroll to bottom
-      logsContent.scrollTop = logsContent.scrollHeight;
+      if (nearBottom) logsContent.scrollTop = logsContent.scrollHeight;
     }
   } catch (error) {
     console.error('Error fetching logs:', error);
