@@ -215,7 +215,7 @@ The manager will:
 2. If the repo has no `Start.sh`, generate a working launcher — it detects the real runtime (a venv-safe Python launcher using the right command for Flask/FastAPI/Streamlit/Django/gunicorn, or `node`/`npm start` for Node projects) and falls back to an editable placeholder when it can't tell, rather than emitting a command that would crash on start
 3. Rediscover projects so the new program appears immediately (existing config is backed up first, and per-program settings like `autostart`, custom names, and env overrides are preserved)
 
-Re-importing the same repository **updates it to the latest upstream** (`git fetch` + `git reset --hard` onto the tracked branch), so pulling a new version keeps working even when the upstream was force-pushed/rebased or when a generated `Start.sh` would otherwise collide — cases a plain `git pull --ff-only` used to abort on. Local edits to tracked files are discarded (these clones are deployment copies of upstream); untracked files such as a generated `.venv` are kept. If the program is running, it is stopped first so its files aren't rewritten underneath it. Passing a different branch on re-import switches to it. If the folder name already holds a *different* repository, the import is refused rather than silently updating the wrong one. If a scaffolded `Start.sh` was generated, review it — and set the right `PORT`/env — before starting the program. Cloning runs `git` directly with argument arrays (never a shell string) and validates the URL, so pasted URLs can't inject shell commands.
+Re-importing the same repository **updates it to the latest upstream** (`git fetch` + `git reset --hard` onto the tracked branch), so pulling a new version keeps working even when the upstream was force-pushed/rebased or when a generated `Start.sh` would otherwise collide — cases a plain `git pull --ff-only` used to abort on. Local edits to tracked files are discarded (these clones are deployment copies of upstream); untracked files such as a generated `.venv` are kept. If the program is running, it is stopped before the update and **automatically restarted on the new code** afterward, so an update-and-retest is a single action. The scaffolded launchers reinstall dependencies when `package.json`/`requirements.txt` changed, so updated dependencies are picked up on the next start. Passing a different branch on re-import switches to it. If the folder name already holds a *different* repository, the import is refused rather than silently updating the wrong one (delete the existing program with "remove files" first, or choose a different name). If a scaffolded `Start.sh` was generated, review it — and set the right `PORT`/env — before starting the program. Cloning runs `git` directly with argument arrays (never a shell string) and validates the URL, so pasted URLs can't inject shell commands.
 
 **What Gets Auto-Detected:**
 - ✅ All directories with `Start.sh` files
@@ -423,7 +423,7 @@ endpoint below requires the `Authorization: Bearer` header** — only
 **Program Management:**
 - `POST /api/programs` - Add a new program
 - `PUT /api/programs/:id` - Update a program (name, path, url, env, `autostart`)
-- `DELETE /api/programs/:id` - Remove a program
+- `DELETE /api/programs/:id` - Remove a program (add `?removeFiles=1` to also delete its folder from disk, confined to the projects directory; default keeps the files)
 
 **Configuration:**
 - `GET /api/config` - Get current configuration

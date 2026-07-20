@@ -987,22 +987,8 @@ app.post('/api/programs/:id/restart', requireApiToken, async (req, res) => {
     // shutdown can't make us throw "already running" and leave it down.
     await stopProgramAndWait(programId);
 
-    // Give the OS a beat to release the port after the group exits, then confirm
-    // the port is actually free before relaunching. bash exiting doesn't guarantee
-    // a server it backgrounded (e.g. `python app.py &`) has released its listening
-    // socket yet; relaunching too early hits EADDRINUSE and the new process crashes
-    // while we've already reported success. Poll (bounded) until the port is free.
-    await new Promise(r => setTimeout(r, 300));
-    const program = getProgramConfig(programId, config);
-    const expectedPort = program && program.env && (program.env.PORT || program.env.port);
-    if (expectedPort) {
-      const deadline = Date.now() + 3000;
-      while (Date.now() < deadline && await probePort(expectedPort)) {
-        await new Promise(r => setTimeout(r, 200));
-      }
-    }
-
-    const result = startProgram(programId, config);
+    // Relaunch once the port is actually free (see startProgramWhenPortFree).
+    const result = await startProgramWhenPortFree(programId, config);
     res.json({ success: true, data: result });
   } catch (err) {
     appendProgramLog(programId, `[system] Restart failed: ${err.message}`);
@@ -1308,6 +1294,24 @@ function stopProgramAndWait(programId, timeoutMs = 12000) {
       done();
     }
   });
+}
+
+// Start a program once its expected port is actually free. bash exiting doesn't
+// guarantee a server it backgrounded (e.g. `python app.py &`) has released its
+// listening socket yet, so relaunching too early hits EADDRINUSE and the fresh
+// process crashes. Assumes any previous instance was already stopped/awaited.
+// Shared by /api/programs/:id/restart and the import-update auto-restart.
+async function startProgramWhenPortFree(programId, config) {
+  await new Promise(r => setTimeout(r, 300));
+  const program = getProgramConfig(programId, config);
+  const expectedPort = program && program.env && (program.env.PORT || program.env.port);
+  if (expectedPort) {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && await probePort(expectedPort)) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+  return startProgram(programId, config);
 }
 
 // Launch all programs marked with autostart: true
@@ -1966,7 +1970,7 @@ app.post('/api/import-repo', requireApiToken, async (req, res) => {
       let restarted = false;
       if (runningId && imported) {
         try {
-          startProgram(imported.id, loadConfig());
+          await startProgramWhenPortFree(imported.id, loadConfig());
           restarted = true;
         } catch (err) {
           console.error(`[manager] Auto-restart after update failed: ${err.message}`);
