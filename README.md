@@ -212,10 +212,10 @@ The fastest way to add a program from another repository:
 
 The manager will:
 1. Clone the repository into your projects folder (`PROJECTS_DIR`, default `projects/` next to the manager)
-2. If the repo has no `Start.sh`, generate one — a venv-safe launcher for Python projects, `npm install && npm start` for Node projects, or an editable placeholder otherwise
-3. Rediscover projects so the new program appears immediately (existing config is backed up first)
+2. If the repo has no `Start.sh`, generate a working launcher — it detects the real runtime (a venv-safe Python launcher using the right command for Flask/FastAPI/Streamlit/Django/gunicorn, or `node`/`npm start` for Node projects) and falls back to an editable placeholder when it can't tell, rather than emitting a command that would crash on start
+3. Rediscover projects so the new program appears immediately (existing config is backed up first, and per-program settings like `autostart`, custom names, and env overrides are preserved)
 
-Re-importing the same repository fast-forwards it (`git pull --ff-only`) instead of failing. If a scaffolded `Start.sh` was generated, review it — and set the right `PORT`/env — before starting the program. Cloning runs `git` directly with argument arrays (never a shell string) and validates the URL, so pasted URLs can't inject shell commands.
+Re-importing the same repository **updates it to the latest upstream** (`git fetch` + `git reset --hard` onto the tracked branch), so pulling a new version keeps working even when the upstream was force-pushed/rebased or when a generated `Start.sh` would otherwise collide — cases a plain `git pull --ff-only` used to abort on. Local edits to tracked files are discarded (these clones are deployment copies of upstream); untracked files such as a generated `.venv` are kept. If the program is running, it is stopped first so its files aren't rewritten underneath it. Passing a different branch on re-import switches to it. If the folder name already holds a *different* repository, the import is refused rather than silently updating the wrong one. If a scaffolded `Start.sh` was generated, review it — and set the right `PORT`/env — before starting the program. Cloning runs `git` directly with argument arrays (never a shell string) and validates the URL, so pasted URLs can't inject shell commands.
 
 **What Gets Auto-Detected:**
 - ✅ All directories with `Start.sh` files

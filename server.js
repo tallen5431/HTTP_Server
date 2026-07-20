@@ -51,26 +51,51 @@ const ALLOWED_HOSTS = new Set(
 const LOG_DIR = process.env.MANAGER_LOG_DIR || path.resolve(__dirname, 'logs');
 const MAX_LOG_FILE_BYTES = 5 * 1024 * 1024; // rotate a program log once it passes 5 MB
 
-function mergeExistingProgramUrlOptions(newProgram, existingProgram) {
+// A rediscover/import regenerates config.json from scratch by parsing each
+// Start.sh, so it only knows what discovery can infer. Carry over the settings a
+// user set through the UI that discovery cannot know about. Without this, every
+// import silently reset autostart to false and reverted custom names/URLs for
+// EVERY program — not just the one being imported (real data loss on the user's
+// core "keep pulling updates" workflow).
+function mergeExistingProgramOverrides(newProgram, existingProgram) {
   if (!existingProgram) return;
 
-  const urlOptionKeys = [
+  // Fields discovery never produces (URL display options) or that are pure user
+  // choices (autostart): keep the existing value whenever discovery didn't set
+  // one. autostart is the important one — discovery never emits it, so a missing
+  // preserve here flipped every program back to autostart:false on each import.
+  const preserveWhenUnset = [
     'url',
     'urlProtocol',
     'hostname',
     'host',
     'preferTailscale',
-    'omitPortInUrl'
+    'omitPortInUrl',
+    'autostart'
   ];
 
-  for (const key of urlOptionKeys) {
+  for (const key of preserveWhenUnset) {
     if (existingProgram[key] !== undefined && newProgram[key] === undefined) {
       newProgram[key] = existingProgram[key];
     }
   }
+
+  // name IS produced by discovery (from the folder), so the unset-rule above
+  // never fires — but it is also user-editable (PUT /api/programs). Prefer the
+  // user's value so a UI rename survives a rediscover. (Because programs are
+  // matched by id, this only applies when the folder — hence id — is unchanged,
+  // so a genuine folder rename still refreshes the name via the id mismatch.)
+  if (existingProgram.name) newProgram.name = existingProgram.name;
+
+  // env: keep the freshly-discovered values so an updated Start.sh's PORT/HOST
+  // take effect, but preserve any extra vars the user added in the UI that the
+  // script doesn't declare. Discovered keys win on conflict; user-only keys stay.
+  if (existingProgram.env && typeof existingProgram.env === 'object') {
+    newProgram.env = { ...existingProgram.env, ...(newProgram.env || {}) };
+  }
 }
 
-function preserveExistingProgramUrlOptions(newConfig, existingConfig) {
+function preserveExistingProgramOverrides(newConfig, existingConfig) {
   if (!existingConfig || !Array.isArray(existingConfig.programs)) {
     return newConfig;
   }
@@ -79,7 +104,7 @@ function preserveExistingProgramUrlOptions(newConfig, existingConfig) {
     const existingProgram = existingConfig.programs.find(program =>
       program.id === newProgram.id
     );
-    mergeExistingProgramUrlOptions(newProgram, existingProgram);
+    mergeExistingProgramOverrides(newProgram, existingProgram);
   }
 
   return newConfig;
@@ -1317,15 +1342,30 @@ function runRediscovery(projectsDir) {
 
   const existingConfig = fs.existsSync(CONFIG_FILE) ? loadConfig() : null;
 
+  const { discoverProjects, generateConfig } = require('./discover-projects');
+  const projects = discoverProjects(projectsDir);
+
+  // Guard against clobbering a good config with an empty one. A rediscover that
+  // finds nothing (wrong PROJECTS_DIR, or every project temporarily missing its
+  // Start.sh) must not wipe every configured program. The import flow just cloned
+  // a repo so it always finds at least that one — this only trips on a misfire.
+  if (projects.length === 0 &&
+      existingConfig && Array.isArray(existingConfig.programs) &&
+      existingConfig.programs.length > 0) {
+    throw new Error(
+      'Discovery found no projects with a Start.sh; refusing to overwrite the ' +
+      `existing config of ${existingConfig.programs.length} program(s). ` +
+      'Check the projects directory.'
+    );
+  }
+
   // Backup existing config before we overwrite it.
   const backupFile = backupConfigFile();
   if (backupFile) {
     console.log(`[manager] Backed up config to: ${backupFile}`);
   }
 
-  const { discoverProjects, generateConfig } = require('./discover-projects');
-  const projects = discoverProjects(projectsDir);
-  const newConfig = preserveExistingProgramUrlOptions(generateConfig(projects), existingConfig);
+  const newConfig = preserveExistingProgramOverrides(generateConfig(projects), existingConfig);
   validateConfig(newConfig);
 
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
@@ -1369,73 +1409,267 @@ function validateGitUrl(repoUrl) {
   return null;
 }
 
-// Clone (or, if the folder is already a git repo, fast-forward) a repository into
-// destPath. Uses spawn with an args array (never a shell string) to avoid command
-// injection, and enforces a timeout so a hung clone can't wedge the manager.
-function cloneOrUpdateRepo(repoUrl, destPath, branch) {
+// Is this a syntactically safe git branch/ref name? The previous regex allowed a
+// leading '-', '..', and leading/trailing '/', which git rejects at runtime — so
+// a bad branch surfaced as an opaque HTTP 500 instead of a clean 400. Mirror
+// git-check-ref-format's key rules so we reject those up front.
+function isValidGitBranch(name) {
+  const b = String(name || '');
+  if (!b || b.length > 255) return false;
+  if (!/^[A-Za-z0-9._/-]+$/.test(b)) return false; // conservative charset (no spaces, ~, ^, :, ?, *, [, \)
+  if (/^[-./]/.test(b)) return false;              // no leading dash, dot, or slash
+  if (/[/.]$/.test(b)) return false;               // no trailing slash or dot
+  if (b.includes('..') || b.includes('//')) return false;
+  if (b.endsWith('.lock')) return false;
+  return true;
+}
+
+// Strip credentials embedded in a URL (scheme://user:token@host/…) before git
+// output goes into an HTTP response or a log line, so a token pasted into the
+// repo URL isn't echoed back on error.
+function sanitizeGitOutput(text) {
+  return String(text || '').replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, '$1***@');
+}
+
+// Normalize a remote URL for equality checks: drop credentials, a trailing
+// ".git", trailing slashes, and lowercase. Best-effort — used only to detect a
+// re-import whose URL doesn't match the clone already sitting at that folder.
+function normalizeRepoUrlForCompare(url) {
+  return String(url || '').trim()
+    .replace(/\/\/[^/@\s]+@/, '//') // drop credentials
+    .replace(/\.git$/i, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
+// Run one git subcommand, capturing combined stdout+stderr, with a hard timeout
+// so a hung/prompting git can never wedge the manager. Resolves the trimmed
+// output on a clean exit; rejects (with credentials scrubbed) otherwise. A single
+// `settled` guard prevents a late exit from double-settling after a timeout.
+function runGitCommand(args, { timeoutMs = 180000 } = {}) {
   return new Promise((resolve, reject) => {
-    const exists = fs.existsSync(destPath);
-    const isGitRepo = exists && fs.existsSync(path.join(destPath, '.git'));
-
-    if (exists && !isGitRepo) {
-      return reject(new Error(
-        `A non-git folder already exists at ${destPath}. Remove it or choose a different name.`
-      ));
-    }
-
-    let args;
-    if (isGitRepo) {
-      args = ['-C', destPath, 'pull', '--ff-only'];
-    } else {
-      args = ['clone', '--depth', '1'];
-      if (branch) args.push('--branch', branch);
-      args.push('--', repoUrl, destPath);
-    }
-
     const git = spawn('git', args, {
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
     });
 
     let out = '';
+    let settled = false;
+    const finish = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(arg);
+    };
+
     git.stdout.on('data', d => { out += d.toString(); });
     git.stderr.on('data', d => { out += d.toString(); });
 
     const timer = setTimeout(() => {
       git.kill('SIGKILL');
-      reject(new Error('git operation timed out after 180s.'));
-    }, 180000);
+      finish(reject, new Error('git operation timed out after 180s.'));
+    }, timeoutMs);
 
     git.on('error', (err) => {
-      clearTimeout(timer);
-      reject(new Error(`Failed to run git: ${err.message}. Is git installed?`));
+      finish(reject, new Error(`Failed to run git: ${err.message}. Is git installed?`));
     });
 
     git.on('exit', (code) => {
-      clearTimeout(timer);
       if (code === 0) {
-        resolve({ updated: isGitRepo, output: out.trim() });
+        finish(resolve, out.trim());
       } else {
-        reject(new Error(`git exited with code ${code}: ${out.trim().slice(-500)}`));
+        finish(reject, new Error(
+          `git exited with code ${code}: ${sanitizeGitOutput(out.trim()).slice(-500)}`
+        ));
       }
     });
   });
 }
 
-// If a freshly cloned project has no Start.sh, scaffold a sensible one so the
-// manager can launch it. Detection mirrors discover-projects.js (Node vs Python
-// vs generic). The Python variant uses a venv-safe launcher pattern.
+// Clone a repo into destPath, or — when destPath is already a git repo — update it
+// to the latest upstream of the requested (or current) branch. Uses spawn with an
+// args array (never a shell string) to avoid command injection.
+//
+// The update path deliberately uses `fetch` + `reset --hard` instead of
+// `pull --ff-only`. A plain ff-only pull ABORTS on the common real-world update
+// cases and returned an opaque 500 — an untracked file the update now tracks (e.g.
+// a Start.sh this manager scaffolded), a force-pushed/rebased upstream, or local
+// edits all break it. These clones are deployment copies of upstream, so "update"
+// means "match upstream": local edits to tracked files are discarded, while
+// untracked files not tracked upstream (a generated .venv) are left in place.
+async function cloneOrUpdateRepo(repoUrl, destPath, branch) {
+  const existedBefore = fs.existsSync(destPath);
+  const isGitRepo = existedBefore && fs.existsSync(path.join(destPath, '.git'));
+
+  if (existedBefore && !isGitRepo) {
+    throw new Error(
+      `A non-git folder already exists at ${destPath}. Remove it or choose a different name.`
+    );
+  }
+
+  if (!isGitRepo) {
+    // Fresh clone. If it fails (including a SIGKILL on timeout, which skips git's
+    // own cleanup), remove the partial directory we caused so the name isn't
+    // permanently wedged for every future import. Only remove what we created.
+    const args = ['clone', '--depth', '1'];
+    if (branch) args.push('--branch', branch);
+    args.push('--', repoUrl, destPath);
+    try {
+      const output = await runGitCommand(args);
+      return { updated: false, output };
+    } catch (err) {
+      if (!existedBefore) {
+        try { fs.rmSync(destPath, { recursive: true, force: true }); } catch (_) { /* best effort */ }
+      }
+      throw err;
+    }
+  }
+
+  // Update path. First guard against silently updating an UNRELATED repo that
+  // merely derived the same folder name: if the clone's origin doesn't match the
+  // requested URL, refuse rather than pull someone else's code under this name.
+  let originUrl = '';
+  try {
+    originUrl = (await runGitCommand(['-C', destPath, 'remote', 'get-url', 'origin'])).trim();
+  } catch (_) {
+    originUrl = '';
+  }
+  if (originUrl && normalizeRepoUrlForCompare(originUrl) !== normalizeRepoUrlForCompare(repoUrl)) {
+    throw new Error(
+      `A different repository is already imported under this name (origin ${sanitizeGitOutput(originUrl)}). ` +
+      'Choose a different folder name to import this URL.'
+    );
+  }
+
+  // Resolve which branch to update to: the caller's choice, else the currently
+  // checked-out branch, else the remote's default (fetched via the literal ref
+  // "HEAD", which resolves to origin's default branch — also covers detached HEAD).
+  let targetBranch = (branch || '').trim();
+  if (!targetBranch) {
+    try {
+      const cur = (await runGitCommand(['-C', destPath, 'rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+      if (cur && cur !== 'HEAD') targetBranch = cur;
+    } catch (_) { /* detached or unknown — fall back to the remote default below */ }
+  }
+
+  const fetchRef = targetBranch || 'HEAD';
+  await runGitCommand(['-C', destPath, 'fetch', '--depth', '1', 'origin', fetchRef]);
+  const resetOut = await runGitCommand(['-C', destPath, 'reset', '--hard', 'FETCH_HEAD']);
+
+  // If the caller asked for a specific branch, move the local branch label onto
+  // the fetched tip so the switch persists — otherwise a later update with no
+  // branch would resolve the OLD branch name and silently revert. The working
+  // tree already matches FETCH_HEAD (we just reset to it), so this touches only
+  // the ref and can't hit an untracked-file conflict. Best-effort: a failure here
+  // doesn't undo the successful content update.
+  if (targetBranch) {
+    try { await runGitCommand(['-C', destPath, 'checkout', '-B', targetBranch]); } catch (_) { /* label only */ }
+  }
+
+  const label = targetBranch ? `Updated to latest ${targetBranch}` : 'Updated to origin default branch';
+  return { updated: true, output: `${label} — ${resetOut}`.trim() };
+}
+
+// Read a small file from the project, returning '' if absent/unreadable.
+function readProjectFile(projectPath, name) {
+  try { return fs.readFileSync(path.join(projectPath, name), 'utf8'); }
+  catch (_) { return ''; }
+}
+
+function safeParseJson(text) {
+  try { return JSON.parse(text); } catch (_) { return null; }
+}
+
+// Work out how to launch a freshly-imported project. A repo can ship BOTH a
+// package.json (often just a JS frontend or tooling) and a Python backend, so we
+// can't blindly prefer whichever manifest we see first — that launched the wrong
+// program (e.g. `npm start` on an OCR app whose real server is Python). Prefer a
+// Python web app when one is present; otherwise Node when it has a real start
+// command; otherwise a placeholder — never a launcher guaranteed to crash (a
+// nonexistent app.py, or `npm start` with no start script defined).
+function detectImportRuntime(projectPath) {
+  const has = (f) => fs.existsSync(path.join(projectPath, f));
+
+  // --- Python signals ---
+  const pyEntry = ['app.py', 'main.py', 'run.py', 'server.py', 'wsgi.py', 'asgi.py', 'manage.py']
+    .find(has) || null;
+  const reqs = has('requirements.txt') ? readProjectFile(projectPath, 'requirements.txt') : '';
+  const entrySrc = pyEntry ? readProjectFile(projectPath, pyEntry) : '';
+  const pyHay = `${reqs}\n${entrySrc}`.toLowerCase();
+  const pyWebFramework =
+    /\b(flask|fastapi|uvicorn|starlette|streamlit|django|gunicorn|bottle|tornado|aiohttp|sanic|quart|hypercorn|waitress)\b/
+      .test(pyHay);
+
+  // --- Node signals ---
+  const pkg = has('package.json') ? safeParseJson(readProjectFile(projectPath, 'package.json')) : null;
+  const nodeStart = !!(pkg && pkg.scripts && typeof pkg.scripts.start === 'string' && pkg.scripts.start.trim());
+  const pkgMain = pkg && typeof pkg.main === 'string' && has(pkg.main) ? pkg.main : null;
+  const nodeEntry = nodeStart ? null : (pkgMain || ['server.js', 'index.js', 'app.js'].find(has) || null);
+  const nodeRunnable = nodeStart || !!nodeEntry;
+
+  // Python wins when it has an entry AND either Node isn't runnable or the repo
+  // clearly declares a Python web framework (the inventoryocr shape: Python
+  // backend + JS frontend). Otherwise Node if runnable, then Python-if-any-entry,
+  // then placeholder.
+  if (pyEntry && (!nodeRunnable || pyWebFramework)) {
+    return { kind: 'python', pyEntry, pyHay, entrySrc, hasManage: has('manage.py'), hasReqs: !!reqs };
+  }
+  if (nodeRunnable) {
+    return { kind: 'node', nodeStart, nodeEntry, hasPkg: !!pkg };
+  }
+  if (pyEntry) {
+    return { kind: 'python', pyEntry, pyHay, entrySrc, hasManage: has('manage.py'), hasReqs: !!reqs };
+  }
+  return { kind: 'placeholder' };
+}
+
+// Build the shell command that actually launches a detected Python web app. A
+// bare `python app.py` never binds a port for apps meant to run under
+// flask/streamlit/uvicorn/gunicorn/django, so pick the right launcher; fall back
+// to running the script directly when it self-serves or the framework is unknown.
+function buildPythonLaunch({ pyEntry, pyHay, entrySrc, hasManage }) {
+  const moduleName = pyEntry.replace(/\.py$/i, '');
+  const appMatch = entrySrc.match(/^\s*([A-Za-z_]\w*)\s*=\s*(?:FastAPI|Flask|Quart|Starlette|Sanic|Bottle)\s*\(/m);
+  const appVar = appMatch ? appMatch[1] : 'app';
+  const selfServes = /if\s+__name__\s*==\s*['"]__main__['"]/.test(entrySrc) &&
+    /\.run\s*\(|run_simple|serve_forever|uvicorn\.run|\.serve\s*\(|make_server|httpd/i.test(entrySrc);
+
+  if (/\bstreamlit\b/.test(pyHay)) {
+    return `exec "$VENV_PY" -m streamlit run "${pyEntry}" --server.address "$HOST" --server.port "$PORT"`;
+  }
+  if (/\bdjango\b/.test(pyHay) && hasManage) {
+    return 'exec "$VENV_PY" manage.py runserver "$HOST:$PORT"';
+  }
+  if (selfServes) {
+    return `exec "$VENV_PY" "${pyEntry}"`;
+  }
+  if (/\b(fastapi|uvicorn|starlette)\b/.test(pyHay)) {
+    return `exec "$VENV_PY" -m uvicorn "${moduleName}:${appVar}" --host "$HOST" --port "$PORT"`;
+  }
+  if (/\bflask\b/.test(pyHay)) {
+    return `exec "$VENV_PY" -m flask --app "${moduleName}" run --host "$HOST" --port "$PORT"`;
+  }
+  if (/\bgunicorn\b/.test(pyHay)) {
+    return `exec "$VENV_PY" -m gunicorn "${moduleName}:${appVar}" --bind "$HOST:$PORT"`;
+  }
+  return `exec "$VENV_PY" "${pyEntry}"`; // best effort: run the script directly
+}
+
+// If a freshly cloned project has no Start.sh, scaffold a working one so the
+// manager can launch it. Runtime detection (detectImportRuntime) picks Node vs a
+// Python web app vs a placeholder, and never emits a command known to fail.
 function scaffoldStartScript(projectPath) {
   const startPath = path.join(projectPath, 'Start.sh');
   if (fs.existsSync(startPath)) {
     return { created: false };
   }
 
-  const has = (f) => fs.existsSync(path.join(projectPath, f));
+  const info = detectImportRuntime(projectPath);
   let body;
-  let kind;
+  const kind = info.kind;
 
-  if (has('package.json')) {
-    kind = 'node';
+  if (kind === 'node') {
+    const install = info.hasPkg ? '[ -d node_modules ] || npm install' : '# (no package.json — nothing to install)';
+    const launch = info.nodeStart ? 'exec npm start' : `exec node "${info.nodeEntry}"`;
     body = [
       '#!/usr/bin/env bash',
       '# Auto-generated by HTTP Server Manager on import. Edit as needed.',
@@ -1446,16 +1680,12 @@ function scaffoldStartScript(projectPath) {
       '# Default off 3000 — that is the manager\'s own port. Change to suit your app.',
       'export PORT="${PORT:-8080}"',
       '',
-      '[ -d node_modules ] || npm install',
-      'npm start',
+      install,
+      launch,
       ''
     ].join('\n');
-  } else if (has('requirements.txt') || has('app.py') || has('run.py') || has('main.py')) {
-    kind = 'python';
-    const entry = has('app.py') ? 'app.py'
-      : has('run.py') ? 'run.py'
-      : has('main.py') ? 'main.py'
-      : 'app.py';
+  } else if (kind === 'python') {
+    const launch = buildPythonLaunch(info);
     body = [
       '#!/usr/bin/env bash',
       '# Auto-generated by HTTP Server Manager on import. Edit as needed.',
@@ -1480,12 +1710,11 @@ function scaffoldStartScript(projectPath) {
       'export HOST="${HOST:-0.0.0.0}"',
       'export PORT="${PORT:-8000}"',
       '',
-      `echo "[RUN] Starting ${entry} (HOST=$HOST PORT=$PORT)"`,
-      `exec "$VENV_PY" "${entry}"`,
+      `echo "[RUN] Launching ${info.pyEntry} (HOST=$HOST PORT=$PORT)"`,
+      launch,
       ''
     ].join('\n');
   } else {
-    kind = 'placeholder';
     body = [
       '#!/usr/bin/env bash',
       '# Auto-generated placeholder — EDIT THIS before starting the program.',
@@ -1516,7 +1745,31 @@ function isInsideProjectsDir(targetPath) {
   try {
     const root = path.resolve(PROJECTS_DIR);
     const resolved = path.resolve(targetPath);
-    return resolved === root || resolved.startsWith(root + path.sep);
+
+    // Lexical containment first — this works even for paths that don't exist yet
+    // (e.g. a not-yet-created program folder) and preserves the original behavior.
+    const lexicallyInside = resolved === root || resolved.startsWith(root + path.sep);
+    if (!lexicallyInside) return false;
+
+    // Then defend against a symlink *inside* the tree that escapes it: realpath the
+    // root and the nearest existing ancestor of the target, and re-check
+    // containment against the resolved locations. If anything can't be resolved
+    // (root or ancestor missing), fall back to the lexical result — never a
+    // regression, only a tightening when the real path can be determined.
+    let realRoot;
+    try { realRoot = fs.realpathSync(root); } catch (_) { return lexicallyInside; }
+
+    let probe = resolved;
+    const rest = [];
+    while (probe !== path.dirname(probe) && !fs.existsSync(probe)) {
+      rest.unshift(path.basename(probe));
+      probe = path.dirname(probe);
+    }
+    let realProbe;
+    try { realProbe = fs.realpathSync(probe); } catch (_) { return lexicallyInside; }
+
+    const realTarget = rest.length ? path.join(realProbe, ...rest) : realProbe;
+    return realTarget === realRoot || realTarget.startsWith(realRoot + path.sep);
   } catch (_) {
     return false;
   }
@@ -1622,7 +1875,7 @@ app.post('/api/import-repo', requireApiToken, async (req, res) => {
     }
 
     const cleanBranch = (branch || '').trim();
-    if (cleanBranch && !/^[A-Za-z0-9._\/-]+$/.test(cleanBranch)) {
+    if (cleanBranch && !isValidGitBranch(cleanBranch)) {
       return res.status(400).json({ success: false, error: 'Invalid branch name.' });
     }
 
@@ -1633,6 +1886,24 @@ app.post('/api/import-repo', requireApiToken, async (req, res) => {
     const resolvedDest = path.resolve(path.join(PROJECTS_DIR, folderName));
     if (resolvedDest !== resolvedRoot && !resolvedDest.startsWith(resolvedRoot + path.sep)) {
       return res.status(400).json({ success: false, error: 'Invalid destination path.' });
+    }
+
+    // If this is an update (the folder is already a git repo) and the program is
+    // currently running, stop it first: `reset --hard` rewrites files underneath a
+    // live process, which can leave a half-updated, corrupted runtime.
+    let stoppedForUpdate = false;
+    if (fs.existsSync(path.join(resolvedDest, '.git'))) {
+      try {
+        const cfg = loadConfig();
+        const running = (cfg.programs || []).find(p =>
+          path.resolve(p.path) === resolvedDest && processes.get(p.id) && processes.get(p.id).isRunning
+        );
+        if (running) {
+          console.log(`[manager] Stopping running program ${running.id} before update`);
+          await stopProgramAndWait(running.id);
+          stoppedForUpdate = true;
+        }
+      } catch (_) { /* best effort — proceed with the update either way */ }
     }
 
     console.log(`[manager] Importing ${repoUrl} -> ${resolvedDest}`);
@@ -1650,6 +1921,9 @@ app.post('/api/import-repo', requireApiToken, async (req, res) => {
       bits.push(scaffold.kind === 'placeholder'
         ? 'no launch command detected — edit the generated Start.sh before starting'
         : `generated a ${scaffold.kind} Start.sh — review it before starting`);
+    }
+    if (stoppedForUpdate) {
+      bits.push('stopped the running program to update it — start it again when ready');
     }
     if (!imported) {
       bits.push('not yet runnable (no Start.sh detected)');
@@ -2055,6 +2329,11 @@ module.exports = {
   runRediscovery,
   deriveRepoFolderName,
   validateGitUrl,
+  isValidGitBranch,
+  sanitizeGitOutput,
+  normalizeRepoUrlForCompare,
+  mergeExistingProgramOverrides,
+  detectImportRuntime,
   cloneOrUpdateRepo,
   scaffoldStartScript,
   getLanIpAddress,

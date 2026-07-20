@@ -224,3 +224,227 @@ test('hostIsAllowed: accepts loopback/IP/Tailscale, rejects unknown domains', ()
 test('discoverProjects: throws instead of exiting on a missing directory', () => {
   assert.throws(() => discover.discoverProjects('/no/such/dir/really'), /not found/i);
 });
+
+// ---------------------------------------------------------------------------
+// isValidGitBranch — reject dangerous/option-like refs up front (clean 400, not a
+// downstream git 500).
+// ---------------------------------------------------------------------------
+test('isValidGitBranch: accepts valid refs, rejects dangerous ones', () => {
+  for (const ok of ['main', 'develop', 'feature/new-x', 'release-1.2.3', 'v2.0']) {
+    assert.strictEqual(server.isValidGitBranch(ok), true, `should accept ${ok}`);
+  }
+  for (const bad of ['-foo', '..', 'a..b', '/main', 'main/', 'x.lock', 'a b', 'foo//bar', '', 'a~b', 'x^y', 'a:b', '.hidden']) {
+    assert.strictEqual(server.isValidGitBranch(bad), false, `should reject ${JSON.stringify(bad)}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeGitOutput — never echo credentials embedded in a repo URL back to the
+// client or logs.
+// ---------------------------------------------------------------------------
+test('sanitizeGitOutput: scrubs credentials embedded in URLs', () => {
+  const s = server.sanitizeGitOutput("fatal: unable to access 'https://user:ghp_secret@github.com/o/r.git/'");
+  assert.match(s, /https:\/\/\*\*\*@github\.com/);
+  assert.doesNotMatch(s, /ghp_secret/);
+});
+
+// ---------------------------------------------------------------------------
+// normalizeRepoUrlForCompare — used to detect a re-import that would update an
+// unrelated repo sharing the same folder name.
+// ---------------------------------------------------------------------------
+test('normalizeRepoUrlForCompare: matches variants of the same repo, distinguishes different ones', () => {
+  const b = server.normalizeRepoUrlForCompare('https://github.com/user/repo/');
+  assert.strictEqual(server.normalizeRepoUrlForCompare('https://github.com/User/Repo.git'), b);
+  assert.strictEqual(server.normalizeRepoUrlForCompare('https://x:y@github.com/user/repo'), b);
+  assert.notStrictEqual(
+    server.normalizeRepoUrlForCompare('https://github.com/alice/app'),
+    server.normalizeRepoUrlForCompare('https://github.com/bob/app')
+  );
+});
+
+// ---------------------------------------------------------------------------
+// mergeExistingProgramOverrides — a rediscover/import must not wipe user-set
+// autostart, custom name, or UI-added env vars.
+// ---------------------------------------------------------------------------
+test('mergeExistingProgramOverrides: preserves autostart/name/url and merges env', () => {
+  const discovered = { id: 'x', name: 'X', path: '/p', env: { PORT: '9000' } };
+  const existing = {
+    id: 'x', name: 'My Custom X', path: '/p',
+    env: { PORT: '8000', API_KEY: 'k' }, autostart: true, url: 'http://h'
+  };
+  server.mergeExistingProgramOverrides(discovered, existing);
+  assert.strictEqual(discovered.autostart, true, 'autostart preserved');
+  assert.strictEqual(discovered.name, 'My Custom X', 'user rename preserved');
+  assert.strictEqual(discovered.url, 'http://h', 'url override preserved');
+  assert.strictEqual(discovered.env.PORT, '9000', 'discovered PORT wins (updated Start.sh)');
+  assert.strictEqual(discovered.env.API_KEY, 'k', 'user-only env var preserved');
+});
+
+// ---------------------------------------------------------------------------
+// scaffoldStartScript — must generate a launcher that actually works and never one
+// that is guaranteed to crash.
+// ---------------------------------------------------------------------------
+function withTempProject(files, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scaffold-'));
+  try {
+    for (const [name, content] of Object.entries(files)) {
+      const fp = path.join(dir, name);
+      fs.mkdirSync(path.dirname(fp), { recursive: true });
+      fs.writeFileSync(fp, content);
+    }
+    return fn(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('scaffoldStartScript: prefers the Python backend over an incidental package.json', () => {
+  withTempProject({
+    'package.json': JSON.stringify({ name: 'frontend', scripts: { start: 'vite' } }),
+    'requirements.txt': 'flask\n',
+    'app.py': 'from flask import Flask\napp = Flask(__name__)\n'
+  }, (dir) => {
+    const r = server.scaffoldStartScript(dir);
+    assert.strictEqual(r.kind, 'python');
+    const body = fs.readFileSync(path.join(dir, 'Start.sh'), 'utf8');
+    assert.match(body, /flask --app "app" run/);
+    assert.doesNotMatch(body, /npm start/);
+  });
+});
+
+test('scaffoldStartScript: Python requirements with no entry file → placeholder, not a nonexistent app.py', () => {
+  withTempProject({ 'requirements.txt': 'requests\n' }, (dir) => {
+    const r = server.scaffoldStartScript(dir);
+    assert.strictEqual(r.kind, 'placeholder');
+    const body = fs.readFileSync(path.join(dir, 'Start.sh'), 'utf8');
+    assert.doesNotMatch(body, /app\.py/);
+  });
+});
+
+test('scaffoldStartScript: Node without a start script uses `node <entry>`, not `npm start`', () => {
+  withTempProject({
+    'package.json': JSON.stringify({ name: 'svc', scripts: { dev: 'x' } }),
+    'server.js': 'console.log(1)\n'
+  }, (dir) => {
+    const r = server.scaffoldStartScript(dir);
+    assert.strictEqual(r.kind, 'node');
+    const body = fs.readFileSync(path.join(dir, 'Start.sh'), 'utf8');
+    assert.match(body, /exec node "server\.js"/);
+    assert.doesNotMatch(body, /npm start/);
+  });
+});
+
+test('scaffoldStartScript: streamlit app is launched via `streamlit run`', () => {
+  withTempProject({ 'requirements.txt': 'streamlit\n', 'app.py': 'import streamlit as st\n' }, (dir) => {
+    server.scaffoldStartScript(dir);
+    const body = fs.readFileSync(path.join(dir, 'Start.sh'), 'utf8');
+    assert.match(body, /streamlit run "app\.py"/);
+  });
+});
+
+test('scaffoldStartScript: a self-serving python script is run directly', () => {
+  withTempProject({
+    'requirements.txt': 'flask\n',
+    'app.py': 'if __name__ == "__main__":\n    app.run(host="0.0.0.0")\n'
+  }, (dir) => {
+    server.scaffoldStartScript(dir);
+    const body = fs.readFileSync(path.join(dir, 'Start.sh'), 'utf8');
+    assert.match(body, /exec "\$VENV_PY" "app\.py"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cloneOrUpdateRepo — the update path must survive the cases a plain
+// `pull --ff-only` aborted on (untracked-file collision + force-push), and must
+// refuse to update an unrelated repo that shares the folder name.
+// ---------------------------------------------------------------------------
+const { execSync } = require('child_process');
+const GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t',
+  GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t'
+};
+const git = (cmd, cwd) => execSync(cmd, { cwd, env: GIT_ENV, stdio: 'pipe' });
+
+test('cloneOrUpdateRepo: update survives untracked-file collision and force-push', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'gitfix-'));
+  try {
+    const remote = path.join(base, 'remote');
+    fs.mkdirSync(remote);
+    git('git init -q -b main', remote);
+    fs.writeFileSync(path.join(remote, 'app.py'), 'v1\n');
+    git('git add -A && git commit -qm c1', remote);
+
+    const dest = path.join(base, 'clone');
+    const r1 = await server.cloneOrUpdateRepo('file://' + remote, dest, '');
+    assert.strictEqual(r1.updated, false);
+
+    // Manager scaffolds an untracked Start.sh; remote then force-pushes (amend) AND
+    // adds a tracked Start.sh that collides — exactly what pull --ff-only aborts on.
+    fs.writeFileSync(path.join(dest, 'Start.sh'), 'scaffolded\n');
+    git('git commit -q --amend -m amended --no-edit', remote);
+    fs.writeFileSync(path.join(remote, 'app.py'), 'v2\n');
+    fs.writeFileSync(path.join(remote, 'Start.sh'), 'real\n');
+    git('git add -A && git commit -qm c2', remote);
+
+    const r2 = await server.cloneOrUpdateRepo('file://' + remote, dest, '');
+    assert.strictEqual(r2.updated, true);
+    assert.strictEqual(fs.readFileSync(path.join(dest, 'app.py'), 'utf8'), 'v2\n');
+    assert.strictEqual(fs.readFileSync(path.join(dest, 'Start.sh'), 'utf8'), 'real\n');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('cloneOrUpdateRepo: an explicit branch switch persists across a later no-branch update', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'gitbr-'));
+  try {
+    const remote = path.join(base, 'remote');
+    fs.mkdirSync(remote);
+    git('git init -q -b main', remote);
+    fs.writeFileSync(path.join(remote, 'f'), 'main-1\n');
+    git('git add -A && git commit -qm m1', remote);
+    git('git checkout -q -b dev', remote);
+    fs.writeFileSync(path.join(remote, 'f'), 'dev-1\n');
+    git('git commit -qam d1', remote);
+    git('git checkout -q main', remote);
+
+    const dest = path.join(base, 'clone');
+    await server.cloneOrUpdateRepo('file://' + remote, dest, '');     // clones default (main)
+    assert.strictEqual(fs.readFileSync(path.join(dest, 'f'), 'utf8'), 'main-1\n');
+
+    await server.cloneOrUpdateRepo('file://' + remote, dest, 'dev');  // switch to dev
+    assert.strictEqual(fs.readFileSync(path.join(dest, 'f'), 'utf8'), 'dev-1\n');
+    assert.strictEqual(git('git rev-parse --abbrev-ref HEAD', dest).toString().trim(), 'dev');
+
+    // Advance dev upstream, then update with NO branch: must stay on dev, not revert to main.
+    git('git checkout -q dev', remote);
+    fs.writeFileSync(path.join(remote, 'f'), 'dev-2\n');
+    git('git commit -qam d2', remote);
+    git('git checkout -q main', remote);
+    await server.cloneOrUpdateRepo('file://' + remote, dest, '');
+    assert.strictEqual(fs.readFileSync(path.join(dest, 'f'), 'utf8'), 'dev-2\n');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('cloneOrUpdateRepo: refuses to update when the existing origin does not match the URL', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'gitfix2-'));
+  try {
+    const remoteA = path.join(base, 'a');
+    fs.mkdirSync(remoteA);
+    git('git init -q -b main', remoteA);
+    fs.writeFileSync(path.join(remoteA, 'f'), 'a\n');
+    git('git add -A && git commit -qm c1', remoteA);
+
+    const dest = path.join(base, 'clone');
+    await server.cloneOrUpdateRepo('file://' + remoteA, dest, '');
+    await assert.rejects(
+      server.cloneOrUpdateRepo('file:///some/other/repo.git', dest, ''),
+      /different repository/i
+    );
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});

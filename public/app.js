@@ -1087,14 +1087,17 @@ async function importRepo(e) {
     if (data.success) {
       showToast(`✅ ${data.message}`, 'success', 6000);
       closeImportModal();
-      // Program list refreshes automatically via WebSocket broadcast.
+      // Refresh explicitly instead of relying solely on the WebSocket broadcast:
+      // if this client's socket is momentarily disconnected it would otherwise
+      // miss the one-shot broadcast and the imported program wouldn't appear.
+      fetchPrograms();
     } else {
       if (status) status.textContent = `❌ ${data.error}`;
       showToast(`❌ Import failed: ${data.error}`, 'error', 6000);
     }
   } catch (err) {
     console.error('Failed to call /api/import-repo:', err);
-    if (status) status.textContent = '❌ Failed to reach the manager.';
+    if (status) status.textContent = '❌ Import failed. Check the manager connection and your token.';
     showToast('Failed to import repository', 'error', 4000);
   } finally {
     submitBtn.disabled = false;
