@@ -483,3 +483,68 @@ test('cloneOrUpdateRepo: refuses to update when the existing origin does not mat
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// tailscale serve awareness — a served program must advertise the proxy's HTTPS
+// URL, not the raw http://host:port origin. The raw origin works but is not a
+// secure context, so browsers withhold the microphone, camera and clipboard on
+// it, and the card would quietly send people to the worse of the two.
+// ---------------------------------------------------------------------------
+test('tailscaleServeUrl: a served port resolves to the https proxy URL', () => {
+  server.__setTailscaleServeCacheForTests(new Map([
+    ['8070', { host: 'box.tail1234.ts.net', port: '443', path: '/' }]
+  ]));
+  assert.strictEqual(server.tailscaleServeUrl(8070), 'https://box.tail1234.ts.net');
+  assert.strictEqual(server.tailscaleServeUrl('8070'), 'https://box.tail1234.ts.net');
+  server.__setTailscaleServeCacheForTests(null);
+});
+
+test('tailscaleServeUrl: a non-443 listener keeps its port (e.g. a Funnel)', () => {
+  server.__setTailscaleServeCacheForTests(new Map([
+    ['8080', { host: 'box.tail1234.ts.net', port: '8443', path: '/' }]
+  ]));
+  assert.strictEqual(server.tailscaleServeUrl(8080), 'https://box.tail1234.ts.net:8443');
+  server.__setTailscaleServeCacheForTests(null);
+});
+
+test('tailscaleServeUrl: a sub-path handler is preserved', () => {
+  server.__setTailscaleServeCacheForTests(new Map([
+    ['9000', { host: 'box.tail1234.ts.net', port: '443', path: '/app' }]
+  ]));
+  assert.strictEqual(server.tailscaleServeUrl(9000), 'https://box.tail1234.ts.net/app');
+  server.__setTailscaleServeCacheForTests(null);
+});
+
+test('tailscaleServeUrl: an unserved port yields null', () => {
+  server.__setTailscaleServeCacheForTests(new Map());
+  assert.strictEqual(server.tailscaleServeUrl(8070), null);
+  server.__setTailscaleServeCacheForTests(null);
+});
+
+test('generateProgramUrls: the Tailscale row uses the serve URL, Local is untouched', () => {
+  server.__setTailscaleServeCacheForTests(new Map([
+    ['8070', { host: 'box.tail1234.ts.net', port: '443', path: '/' }]
+  ]));
+  const urls = server.generateProgramUrls({ id: 'x', name: 'X', env: { PORT: '8070' } }, {});
+  const ts = urls.find(u => u.kind === 'tailscale');
+  const local = urls.find(u => u.kind === 'local');
+
+  assert.strictEqual(ts.url, 'https://box.tail1234.ts.net');
+  // The LAN address has no TLS and no proxy, so it must stay plain http:port.
+  // This is what the urlProtocol/omitPortInUrl options got wrong: they apply to
+  // every row at once.
+  if (local) {
+    assert.ok(local.url.startsWith('http://'), `Local should stay http, got ${local.url}`);
+    assert.ok(local.url.endsWith(':8070'), `Local should keep its port, got ${local.url}`);
+  }
+  server.__setTailscaleServeCacheForTests(null);
+});
+
+test('generateProgramUrls: falls back to the old behaviour when serve is not configured', () => {
+  server.__setTailscaleServeCacheForTests(new Map());
+  const urls = server.generateProgramUrls({ id: 'x', name: 'X', env: { PORT: '8070' } }, {});
+  for (const u of urls) {
+    assert.ok(u.url.includes(':8070'), `expected the raw port, got ${u.url}`);
+  }
+  server.__setTailscaleServeCacheForTests(null);
+});

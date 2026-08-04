@@ -302,6 +302,81 @@ function resolveTailscaleDnsName() {
   return value;
 }
 
+// Which local ports `tailscale serve` is proxying, and at what public URL.
+//
+// Without this a served program advertises http://<magic-dns>:<port>, which is
+// the raw origin rather than the proxy: it works, but it is plain HTTP, so the
+// browser withholds every secure-context API (microphone, camera, clipboard,
+// screen capture) and the card sends people somewhere subtly worse than the URL
+// they set up. The existing urlProtocol/omitPortInUrl options cannot express
+// this, because they apply to the LAN row too — forcing that to
+// https://192.168.x.x, which nothing is listening on.
+//
+// Shaped and bounded exactly like resolveTailscaleDnsName above: same TTL, same
+// hard timeout, misses cached, so a missing or wedged CLI costs nothing.
+let tsServeCache = { value: null, at: 0 };
+
+function getTailscaleServeMap() {
+  const now = Date.now();
+  if (tsServeCache.at && (now - tsServeCache.at) < TS_LOOKUP_TTL_MS) {
+    return tsServeCache.value;
+  }
+
+  const map = new Map();   // local port (string) -> { host, port, path }
+  try {
+    const conf = JSON.parse(execSync('tailscale serve status --json', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+      killSignal: 'SIGKILL',
+      maxBuffer: 4 * 1024 * 1024
+    }));
+
+    // ServeConfig.Web is keyed "host:port"; each entry's Handlers is keyed by
+    // path, and a proxy handler carries the local origin it forwards to.
+    for (const [hostPort, entry] of Object.entries((conf && conf.Web) || {})) {
+      const lastColon = String(hostPort).lastIndexOf(':');
+      if (lastColon < 0) continue;
+      const host = hostPort.slice(0, lastColon);
+      const publicPort = hostPort.slice(lastColon + 1);
+
+      for (const [handlerPath, handler] of Object.entries((entry && entry.Handlers) || {})) {
+        const proxy = handler && handler.Proxy;
+        if (!proxy) continue;
+        // "http://127.0.0.1:8070" — take the port only for a loopback target,
+        // since that is what "serve this local program" looks like.
+        const m = String(proxy).match(/^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::(\d+))?/i);
+        if (!m) continue;
+        const localPort = m[1] || '80';
+        // Prefer the root handler when one host serves several paths.
+        if (!map.has(localPort) || handlerPath === '/') {
+          map.set(localPort, { host, port: publicPort, path: handlerPath || '/' });
+        }
+      }
+    }
+  } catch (err) {
+    // Tailscale absent, serve unconfigured, or the CLI timed out — cache the
+    // miss so this doesn't re-spawn on every status broadcast.
+  }
+
+  tsServeCache = { value: map, at: now };
+  return map;
+}
+
+// Test seam: prime the memoized map without shelling out to the CLI.
+function __setTailscaleServeCacheForTests(map) {
+  tsServeCache = { value: map, at: map ? Date.now() : 0 };
+}
+
+// Public https URL for a locally-served port, or null when it isn't served.
+function tailscaleServeUrl(port) {
+  const served = getTailscaleServeMap().get(String(port));
+  if (!served) return null;
+  const portSegment = served.port === '443' ? '' : `:${served.port}`;
+  const pathSegment = served.path && served.path !== '/' ? served.path : '';
+  return `https://${served.host}${portSegment}${pathSegment}`;
+}
+
 // Get the current machine's Tailscale HTTPS hostname when available.
 function getTailscaleHostname(config) {
   const configuredHostname = config && (config.tailscaleHostname || config.tailscaleHost);
@@ -506,6 +581,12 @@ function generateProgramUrl(program, config, runtimePort = null, urlContext = nu
   // Otherwise, attempt to generate from PORT
   const port = runtimePort || (program.env && (program.env.PORT || program.env.port));
   if (port) {
+    // A `tailscale serve` proxy for this port is the operator's own explicit
+    // setup and outranks the generated guess — it is also the only variant that
+    // is a secure context, which the Open button should prefer.
+    const servedUrl = tailscaleServeUrl(port);
+    if (servedUrl) return servedUrl;
+
     const preferTailscale = program.preferTailscale || (config && config.preferTailscale);
     const requestHostname = urlContext && urlContext.hostname;
     const requestProtocol = urlContext && urlContext.protocol;
@@ -578,8 +659,18 @@ function generateProgramUrls(program, config, runtimePort = null) {
   // Local LAN address — what other devices on the same Wi-Fi/Ethernet use.
   add('Local', 'local', getLanIpAddress());
 
-  // Remote access over Tailscale — prefer the MagicDNS name, else the 100.x IP.
-  add('Tailscale', 'tailscale', getTailscaleHostname(config) || getTailscaleIpAddress());
+  // Remote access over Tailscale. When `tailscale serve` is proxying this port,
+  // that HTTPS URL is the one to hand out — it is a secure context, so the mic
+  // and clipboard work there and not on the raw http://host:port origin. Only
+  // this row changes; Local stays plain http on its own port.
+  const servedUrl = tailscaleServeUrl(port);
+  if (servedUrl && !seen.has(servedUrl)) {
+    seen.add(servedUrl);
+    urls.push({ label: 'Tailscale', url: servedUrl, kind: 'tailscale' });
+  } else {
+    // Not served — fall back to the MagicDNS name, else the 100.x IP.
+    add('Tailscale', 'tailscale', getTailscaleHostname(config) || getTailscaleIpAddress());
+  }
 
   return urls;
 }
@@ -2453,6 +2544,9 @@ module.exports = {
   getLanIpAddress,
   getPrimaryIpAddress,
   generateProgramUrls,
+  getTailscaleServeMap,
+  tailscaleServeUrl,
+  __setTailscaleServeCacheForTests,
   rankLanInterface,
   parseListeningPortFromLog,
   isInsideProjectsDir,
