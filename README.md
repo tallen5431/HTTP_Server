@@ -22,33 +22,46 @@ A simple, self-configuring HTTP server manager that automatically detects your n
 
 ## Prerequisites
 
-- **Node.js** (v14 or later)
-- **npm** (comes with Node.js)
-- Projects with `Start.sh` scripts in their root directories
+- **Node.js** (v14 or later) and **npm** — [nodejs.org/en/download](https://nodejs.org/en/download),
+  or `sudo apt install nodejs npm` / `brew install node`
+- That's it. Everything else the manager needs, it sets up on first run.
 
 ## Quick Start
 
-### 1. Install Dependencies
+Download the project (clone it, or **Code → Download ZIP** on GitHub and unzip
+it), then run:
 
 ```bash
-npm install
+./start-manager.sh
 ```
 
-### 2. Configure Your Programs
+That's the whole install. On first run the script checks your Node version,
+installs the npm dependencies, creates the `projects/` folder, and starts the
+manager — then open **http://localhost:3000**.
+
+Nothing is tied to a particular machine or account: every path is derived from
+wherever you put the folder, and the network address is detected at runtime. You
+can move or rename the folder and it keeps working.
+
+> If you get `Permission denied`, the executable bit didn't survive the ZIP:
+> run `chmod +x start-manager.sh install-service.sh` (or just `bash start-manager.sh`).
+
+To keep it running across reboots, see
+[Auto-Launch Manager on Boot](#auto-launch-manager-on-boot-systemd).
+
+### Adding Your Programs
 
 You have two options:
 
 #### Option A: Auto-Discovery (Recommended)
 
-Let the manager automatically find all your projects:
+Drop projects (each with a `Start.sh` in its root) into the `projects/` folder
+next to this install, then hit **Rediscover** in the web UI — or use **Import
+from Git** to clone one straight in. You can also point the manager at a
+different folder:
 
 ```bash
-# The manager defaults to the `projects/` folder next to this install
-# Just run:
-npm start
-
-# Or specify a custom projects directory:
-PROJECTS_DIR=/path/to/your/projects npm start
+PROJECTS_DIR=/path/to/your/projects ./start-manager.sh
 ```
 
 The manager will:
@@ -78,15 +91,25 @@ Create a `config.json` file (use `config.example.json` as a template):
 }
 ```
 
-### 3. Start the Manager
+### Accessing the Web Interface
+
+The manager listens on port 3000 by default (`PORT=8080 ./start-manager.sh` to
+change it):
+- `http://localhost:3000` (local)
+- `http://YOUR_IP:3000` (from other devices on your network — requires an access
+  token, see [Security](#security))
+
+### Start Script Options
 
 ```bash
-npm start
+./start-manager.sh                  # install deps if needed, then start
+./start-manager.sh --skip-install   # start without touching npm
+./start-manager.sh --help           # list options
+PORT=8080 ./start-manager.sh        # any of the environment variables below
 ```
 
-The server will start on port 3000 by default. Access the web interface at:
-- `http://localhost:3000` (local)
-- `http://YOUR_IP:3000` (from other devices on your network)
+`npm start` also works if the dependencies are already installed; the shell
+script is the one that bootstraps them for you.
 
 > **Heads-up on remote use:** this manager can start programs and clone-and-run
 > git repos, so reaching it over a network is effectively remote command access
@@ -287,46 +310,51 @@ When the manager starts, any programs with `autostart: true` will launch automat
 
 #### Auto-Launch Manager on Boot (systemd)
 
-To have the HTTP Server Manager itself start automatically after a system reboot, install it as a systemd service:
+To have the HTTP Server Manager itself start automatically after a reboot, run:
 
-1. **Copy the service file:**
-   ```bash
-   sudo cp http-server-manager.service /etc/systemd/system/
-   ```
+```bash
+./install-service.sh
+```
 
-2. **Edit paths and the user if needed:**
-   ```bash
-   sudo nano /etc/systemd/system/http-server-manager.service
-   # Update WorkingDirectory/ExecStart paths and User=/Group= to match your setup.
-   # The unit runs as a NON-ROOT user on purpose — do not change it to root.
-   ```
+That's all — it renders `http-server-manager.service.template` for your machine
+(detecting the install directory, your user account, and your `node` binary),
+installs it to `/etc/systemd/system/`, enables it at boot and starts it. It calls
+`sudo` where it needs to, so run it as your **normal user**, not as root — it
+refuses to install a unit that would run the manager as root.
 
-3. **Set the access token** (required for remote use) via the environment file:
-   ```bash
-   sudo install -m600 http-server-manager.env.example /etc/http-server-manager.env
-   sudo nano /etc/http-server-manager.env   # set MANAGER_API_TOKEN
-   ```
-   The unit already loads this file (`EnvironmentFile=-/etc/http-server-manager.env`),
-   so the secret stays out of the world-readable unit.
+**Options:**
 
-4. **Enable and start the service:**
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable http-server-manager
-   sudo systemctl start http-server-manager
-   ```
+```bash
+./install-service.sh --with-token   # also generate an access token, so you can
+                                    #   reach the manager from other devices
+./install-service.sh --port 8080    # listen on a different port
+./install-service.sh --user someone # run as a different account
+./install-service.sh --dry-run      # print the unit it would install, change nothing
+./install-service.sh --no-start     # enable at boot, but don't start it now
+./install-service.sh --uninstall    # stop, disable and remove the service
+```
 
-5. **Check status:**
-   ```bash
-   sudo systemctl status http-server-manager
-   ```
+Without `--with-token` the service stays loopback-only (reachable from that
+machine only) — the same fail-closed default as running it by hand. Use
+`--with-token` when you want to reach it from your phone or another computer; it
+writes a generated token to a root-only `/etc/http-server-manager.env` and prints
+it once so you can sign in.
 
-6. **View logs:**
-   ```bash
-   sudo journalctl -u http-server-manager -f
-   ```
+**Managing it afterwards:**
 
-The systemd service will automatically restart the manager if it crashes, and it will start on every boot. Combined with per-program `autostart: true` flags, this ensures your services are always running after a reboot.
+```bash
+sudo systemctl status http-server-manager     # is it running?
+sudo journalctl -u http-server-manager -f     # follow its logs
+sudo systemctl restart http-server-manager    # restart it
+```
+
+The service restarts the manager automatically if it crashes, and starts it on
+every boot. Combined with per-program `autostart: true` flags, this ensures your
+services are always running after a reboot.
+
+> **Not on systemd?** macOS (launchd), WSL, and containers don't use it — the
+> installer will tell you so and change nothing. Run `./start-manager.sh`
+> directly there.
 
 ### Environment Variables
 
@@ -361,7 +389,7 @@ You can configure the server using these environment variables:
 
 Example:
 ```bash
-PORT=4000 MANAGER_API_TOKEN="$(openssl rand -hex 32)" npm start
+PORT=4000 MANAGER_API_TOKEN="$(openssl rand -hex 32)" ./start-manager.sh
 ```
 
 ## Project Structure
@@ -529,6 +557,19 @@ The Open button only appears when a program has a valid URL. To see Open buttons
 - Make sure the program has a `PORT` environment variable in config.json
 - Ensure PORT is a valid number (not "HOST" or variable references)
 - Or manually set a `url` field in the program configuration
+
+### The manager itself won't start?
+
+- **`Permission denied`** — the executable bit was lost (common when the ZIP is
+  unzipped by a GUI tool): `chmod +x start-manager.sh install-service.sh`, or run
+  it as `bash start-manager.sh`.
+- **`Node.js is not installed`** — install Node v14+ from
+  [nodejs.org](https://nodejs.org/en/download), then re-run the script.
+- **`npm install failed`** — usually no internet connection, or the folder isn't
+  writable by your user. Fix that and re-run; the script retries the install
+  itself on the next start.
+- **`EADDRINUSE` / port already in use** — something else has port 3000. Start on
+  another one: `PORT=8080 ./start-manager.sh`.
 
 ### Programs not starting?
 
