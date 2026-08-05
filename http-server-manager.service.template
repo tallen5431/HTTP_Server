@@ -1,3 +1,16 @@
+# systemd unit TEMPLATE for the HTTP Server Manager.
+#
+# The double-underscore placeholders below are filled in for your machine by
+# ./install-service.sh, which detects the install directory, the invoking user and
+# the node binary, then installs the rendered unit to /etc/systemd/system/. Run
+# that instead of copying this file by hand:
+#
+#   ./install-service.sh              # install, enable at boot, start now
+#   ./install-service.sh --dry-run    # preview the unit without installing it
+#   ./install-service.sh --uninstall  # remove it again
+#
+# To render it by hand, substitute a real value for each one.
+
 [Unit]
 Description=HTTP Server Manager
 Documentation=https://github.com/tallen5431/http_server
@@ -9,15 +22,15 @@ Type=simple
 
 # Run as a NON-ROOT user. This manager launches arbitrary programs and clones and
 # runs git repos, so running it as root turns any of that into full host
-# compromise. Point these at the (unprivileged) account that owns the checkout;
+# compromise. These point at the (unprivileged) account that owns the checkout;
 # a dedicated `httpmanager` user that only owns this directory is even better.
-User=user
-Group=user
+User=__RUN_USER__
+Group=__RUN_GROUP__
 
-WorkingDirectory=/home/user/HTTP_Server
+WorkingDirectory=__INSTALL_DIR__
 Environment="NODE_ENV=production"
-Environment="CONFIG_FILE=/home/user/HTTP_Server/config.json"
-Environment="PORT=3000"
+Environment="CONFIG_FILE=__INSTALL_DIR__/config.json"
+Environment="PORT=__PORT__"
 # PROJECTS_DIR is intentionally unset here so it falls back to server.js's
 # default: a `projects/` folder next to server.js itself (i.e. the ExecStart
 # path) — which in this unit is the same as WorkingDirectory. If you move
@@ -28,11 +41,12 @@ Environment="PORT=3000"
 # which may be world-readable. Create it from the shipped example:
 #   sudo install -m600 http-server-manager.env.example /etc/http-server-manager.env
 #   sudo nano /etc/http-server-manager.env   # set MANAGER_API_TOKEN
+# (`./install-service.sh --with-token` writes it for you with a generated token.)
 # The leading '-' makes it optional so the manager still starts (loopback-only)
 # if the file is absent.
 EnvironmentFile=-/etc/http-server-manager.env
 
-ExecStart=/usr/bin/node /home/user/HTTP_Server/server.js
+ExecStart=__NODE_BIN__ __INSTALL_DIR__/server.js
 Restart=on-failure
 RestartSec=10s
 
@@ -51,7 +65,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 # For stronger isolation (may need tuning if a launched program writes outside
-# the checkout), consider: ProtectSystem=strict + ReadWritePaths=/home/user/HTTP_Server
+# the checkout), consider: ProtectSystem=strict + ReadWritePaths=__INSTALL_DIR__
 # and PrivateTmp=true.
 
 [Install]

@@ -548,3 +548,62 @@ test('generateProgramUrls: falls back to the old behaviour when serve is not con
   }
   server.__setTailscaleServeCacheForTests(null);
 });
+
+// ---------------------------------------------------------------------------
+// Portability — the point of shipping this to someone else is that a download
+// runs as-is. Nothing distributed may hardcode a path, account or address that
+// only exists on the machine it was written on.
+// ---------------------------------------------------------------------------
+const REPO_ROOT = path.join(__dirname, '..');
+const SERVICE_TEMPLATE = path.join(REPO_ROOT, 'http-server-manager.service.template');
+const INSTALL_SCRIPT = path.join(REPO_ROOT, 'install-service.sh');
+
+// Strip '#' comments so prose examples (which legitimately show sample paths)
+// don't trip the checks below — only real directives matter.
+function withoutComments(text) {
+  return text.split('\n').filter(line => !/^\s*#/.test(line)).join('\n');
+}
+
+test('shipped scripts and unit template contain no machine-specific paths', () => {
+  const files = ['start-manager.sh', 'install-service.sh', 'http-server-manager.service.template'];
+  // A real home directory baked into a shipped file — /home/someone or
+  // /Users/someone — is exactly what breaks on another person's machine.
+  const homePath = /\/(home|Users)\/[A-Za-z0-9._-]+/;
+
+  for (const file of files) {
+    const body = withoutComments(fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'));
+    const match = body.match(homePath);
+    assert.strictEqual(match, null,
+      `${file} hardcodes a machine-specific path: ${match && match[0]}`);
+  }
+});
+
+test('every placeholder in the unit template is substituted by install-service.sh', () => {
+  const template = fs.readFileSync(SERVICE_TEMPLATE, 'utf8');
+  const installer = fs.readFileSync(INSTALL_SCRIPT, 'utf8');
+
+  const placeholders = [...new Set(
+    (withoutComments(template).match(/__[A-Z_]+__/g) || [])
+  )];
+
+  // A template that lost its placeholders would silently install a unit with
+  // literal junk in it, so require the ones the service genuinely needs.
+  for (const required of ['__RUN_USER__', '__INSTALL_DIR__', '__NODE_BIN__', '__PORT__']) {
+    assert.ok(placeholders.includes(required),
+      `template is missing the ${required} placeholder`);
+  }
+
+  for (const placeholder of placeholders) {
+    assert.ok(installer.includes(placeholder),
+      `install-service.sh never substitutes ${placeholder}, so it would ship literally`);
+  }
+});
+
+test('the unit template never runs the manager as root', () => {
+  const body = withoutComments(fs.readFileSync(SERVICE_TEMPLATE, 'utf8'));
+  // The manager launches arbitrary programs and clones and runs git repos, so a
+  // root unit turns any of that into full host compromise.
+  assert.ok(!/^\s*User\s*=\s*root\s*$/m.test(body), 'unit template sets User=root');
+  assert.ok(/^\s*User\s*=\s*__RUN_USER__\s*$/m.test(body),
+    'unit template should take its user from the installer');
+});
