@@ -14,6 +14,7 @@ const { spawn } = require('child_process');
 const WebSocket = require('ws');
 
 const remoteHosts = require('../remote-hosts');
+const quickCommands = require('../remote-hosts/quick-commands');
 
 const STATUS = {
   Self: {
@@ -92,6 +93,57 @@ test('buildSshArgs: keep-session wraps the shell in tmux with a fixed command', 
   assert.match(remoteHosts.PERSISTENT_SHELL_COMMAND, /exec "\$\{SHELL:-\/bin\/sh\}" -l/);
 });
 
+test('quick commands: normalize, validate, keep ids', () => {
+  const [a, b] = quickCommands.normalizeCommandList([
+    { label: ' RCON ', command: ' mcrcon -p x ' },
+    { id: 'abcdef012345', label: 'Logs', command: 'journalctl -f' }
+  ]);
+  assert.deepStrictEqual({ label: a.label, command: a.command }, { label: 'RCON', command: 'mcrcon -p x' });
+  assert.match(a.id, /^[a-f0-9]{12}$/);
+  assert.strictEqual(b.id, 'abcdef012345', 'existing ids are kept');
+
+  const bad = [
+    [{ label: '', command: 'x' }, /needs a name/],
+    [{ label: 'x', command: '' }, /no command/],
+    [{ label: 'x', command: 'a\nb' }, /single line/],
+    [{ label: 'x'.repeat(41), command: 'a' }, /too long/],
+    [{ label: 'x', command: 'a'.repeat(1001) }, /too long/]
+  ];
+  for (const [item, msg] of bad) {
+    assert.throws(() => quickCommands.normalizeCommandList([item]), msg);
+  }
+  assert.throws(() => quickCommands.normalizeCommandList(
+    Array(21).fill({ label: 'x', command: 'y' })), /At most 20/);
+});
+
+test('quick commands: stored owner-only, per device, tolerant of a broken file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quick-commands-'));
+  const file = path.join(dir, 'quick-commands.json');
+  try {
+    assert.deepStrictEqual(quickCommands.loadQuickCommands(file), {}, 'missing file is empty');
+    const [saved] = quickCommands.setDeviceCommands(file, 'nPi', [{ label: 'Up', command: 'uptime' }]);
+    assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+    assert.deepStrictEqual(quickCommands.findQuickCommand(file, 'nPi', saved.id), saved);
+    assert.strictEqual(quickCommands.findQuickCommand(file, 'nOther', saved.id), null,
+      'a command only runs on the device it was saved for');
+    quickCommands.setDeviceCommands(file, 'nPi', []);
+    assert.deepStrictEqual(quickCommands.loadQuickCommands(file), {});
+    assert.throws(() => quickCommands.setDeviceCommands(file, '../etc', []), /Invalid device/);
+    fs.writeFileSync(file, '{ not json');
+    assert.deepStrictEqual(quickCommands.loadQuickCommands(file), {});
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildSshArgs: a quick command replaces the shell', () => {
+  const args = remoteHosts.buildSshArgs({ address: '100.64.0.6' }, 'mc',
+    { persist: true, command: 'mcrcon -H 127.0.0.1' });
+  assert.ok(args.includes('-t'));
+  assert.deepStrictEqual(args.slice(-3), ['--', '100.64.0.6', 'mcrcon -H 127.0.0.1']);
+  assert.ok(!args.includes(remoteHosts.PERSISTENT_SHELL_COMMAND), 'command wins over keep-session');
+});
+
 // ---------------------------------------------------------------------------
 // End to end: the real manager, stub tailscale + ssh
 // ---------------------------------------------------------------------------
@@ -139,7 +191,8 @@ async function startManager() {
       MANAGER_API_TOKEN: TOKEN,
       CONFIG_FILE: configFile,
       PROJECTS_DIR: path.join(dir, 'projects'),
-      MANAGER_LOG_DIR: path.join(dir, 'logs')
+      MANAGER_LOG_DIR: path.join(dir, 'logs'),
+      MANAGER_QUICK_COMMANDS_FILE: path.join(dir, 'quick-commands.json')
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -228,6 +281,37 @@ test('terminal: end to end over the WebSocket', async (t) => {
       onOpen: (ws) => setTimeout(() => ws.send(JSON.stringify({ type: 'input', data: '\r' })), 300)
     });
     assert.doesNotMatch(plain.output, /tmux/);
+  });
+
+  await t.test('quick commands: saved through the API, run by ID only', async () => {
+    const auth = { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
+    const put = await fetch(`http://127.0.0.1:${port}/api/quick-commands/nPi`, {
+      method: 'PUT', headers: auth,
+      body: JSON.stringify({ commands: [{ label: 'RCON', command: 'mcrcon -H 127.0.0.1 -p secret' }] })
+    });
+    const { commands: [cmd] } = await put.json();
+    assert.strictEqual(put.status, 200);
+
+    const listed = await (await fetch(`http://127.0.0.1:${port}/api/quick-commands`, { headers: auth })).json();
+    assert.deepStrictEqual(listed, { nPi: [cmd] });
+
+    const badPut = await fetch(`http://127.0.0.1:${port}/api/quick-commands/nPi`, {
+      method: 'PUT', headers: auth, body: JSON.stringify({ commands: [{ label: '', command: 'x' }] })
+    });
+    assert.strictEqual(badPut.status, 400);
+
+    const ran = await openTerminal(port, { device: 'nPi', command: cmd.id, persist: '1' }, {
+      onOpen: (ws) => setTimeout(() => ws.send(JSON.stringify({ type: 'input', data: '\r' })), 300)
+    });
+    assert.match(ran.output, /ARGS:.* -t .*-- 100\.64\.0\.2 mcrcon -H 127\.0\.0\.1 -p secret/);
+    assert.doesNotMatch(ran.output, /tmux/, 'a quick command is not wrapped in tmux');
+
+    const otherDevice = await openTerminal(port, { device: 'nSelf', command: cmd.id });
+    assert.strictEqual(otherDevice.closeCode, 1008);
+    assert.match(otherDevice.control[0].message, /no longer exists/);
+
+    const unknown = await openTerminal(port, { device: 'nPi', command: 'ffffffffffff' });
+    assert.strictEqual(unknown.closeCode, 1008);
   });
 
   await t.test('rejects a device that is not on the tailnet', async () => {

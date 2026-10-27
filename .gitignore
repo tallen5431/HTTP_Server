@@ -16,3 +16,5 @@ http-server-manager.env
 *.swp
 *.swo
 *~
+# Saved terminal quick commands; may contain passwords (see remote-hosts/quick-commands.js).
+quick-commands.json

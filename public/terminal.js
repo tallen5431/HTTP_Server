@@ -17,8 +17,10 @@ const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
 
 let terminalEnabled = false;
 let currentDevices = [];
+let quickCommandsByDevice = {}; // deviceId -> [{ id, label, command }], stored on the manager
 // The open terminal: { term, fit, socket, target, exited, ... }. `target` is
-// what to (re)connect to: { device, user, persist }.
+// what to (re)connect to: { device, user, persist, command }, where `command`
+// is a saved quick command ({ id, label }) to run instead of a shell.
 let terminalState = null;
 let xtermLoading = null;
 
@@ -91,9 +93,13 @@ function recentTerminals() {
   return Array.isArray(list) ? list.filter(r => r && typeof r.id === 'string') : [];
 }
 
-function rememberRecent(device, user, persist) {
-  const entry = { id: device.id, name: device.name, user: user || '', persist: Boolean(persist) };
-  const rest = recentTerminals().filter(r => !(r.id === entry.id && r.user === entry.user));
+function rememberRecent(device, user, persist, command) {
+  const entry = {
+    id: device.id, name: device.name, user: user || '', persist: Boolean(persist),
+    commandId: command ? command.id : null
+  };
+  const rest = recentTerminals().filter(r =>
+    !(r.id === entry.id && r.user === entry.user && (r.commandId || null) === entry.commandId));
   writePref('recentTerminals', [entry, ...rest].slice(0, MAX_RECENT));
 }
 
@@ -131,8 +137,12 @@ async function loadDevices(fresh) {
 
   let data;
   try {
-    const res = await api(`/api/remote-hosts${fresh ? '?refresh=1' : ''}`);
-    data = await res.json();
+    const [hostsRes, commandsRes] = await Promise.all([
+      api(`/api/remote-hosts${fresh ? '?refresh=1' : ''}`),
+      api('/api/quick-commands')
+    ]);
+    data = await hostsRes.json();
+    quickCommandsByDevice = commandsRes.ok ? await commandsRes.json() : {};
   } catch (err) {
     loading.textContent = `Could not load devices: ${err.message}`;
     return;
@@ -165,8 +175,13 @@ function renderRecent() {
   const list = document.getElementById('devicesRecentList');
   list.textContent = '';
   const recent = recentTerminals()
-    .map(r => ({ ...r, device: currentDevices.find(d => d.id === r.id) }))
-    .filter(r => r.device);
+    .map(r => ({
+      ...r,
+      device: currentDevices.find(d => d.id === r.id),
+      command: r.commandId ? findQuickCommand(r.id, r.commandId) : null
+    }))
+    // Drop entries whose device left the tailnet or whose command was deleted.
+    .filter(r => r.device && (!r.commandId || r.command));
   section.classList.toggle('hidden', !terminalEnabled || recent.length === 0);
 
   for (const r of recent) {
@@ -177,9 +192,11 @@ function renderRecent() {
     const dot = document.createElement('span');
     dot.className = `device-dot ${r.device.online ? 'online' : 'offline'}`;
     const label = document.createElement('span');
-    label.textContent = `${r.user ? `${r.user}@` : ''}${r.device.name}`;
+    label.textContent = r.command
+      ? `▶ ${r.command.label} · ${r.device.name}`
+      : `${r.user ? `${r.user}@` : ''}${r.device.name}`;
     chip.append(dot, label);
-    if (r.persist) {
+    if (r.persist && !r.command) {
       const tag = document.createElement('span');
       tag.className = 'recent-chip-tag';
       tag.textContent = 'tmux';
@@ -187,10 +204,27 @@ function renderRecent() {
     }
     chip.addEventListener('click', () => {
       closeDevicesModal();
-      openTerminal({ device: r.device, user: r.user, persist: r.persist });
+      openTerminal({ device: r.device, user: r.user, persist: r.persist, command: r.command });
     });
     list.appendChild(chip);
   }
+}
+
+function findQuickCommand(deviceId, commandId) {
+  return (quickCommandsByDevice[deviceId] || []).find(c => c.id === commandId) || null;
+}
+
+// Save a device's whole list; the manager assigns IDs to new entries.
+async function saveQuickCommands(deviceId, commands) {
+  const res = await api(`/api/quick-commands/${encodeURIComponent(deviceId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ commands })
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body.success) throw new Error(body.error || `Save failed (${res.status})`);
+  quickCommandsByDevice[deviceId] = body.commands;
+  return body.commands;
 }
 
 // Phones and tablets show up on the tailnet but don't run an SSH server.
@@ -324,8 +358,118 @@ function renderDeviceRow(device) {
   actions.className = 'device-actions';
   actions.append(settings, connect);
   main.appendChild(actions);
+
+  // One-tap buttons for this device's saved commands.
+  const quick = document.createElement('div');
+  quick.className = 'device-quick';
+  const editor = document.createElement('div');
+  editor.className = 'quick-editor';
+
+  const renderQuick = () => {
+    const commands = quickCommandsByDevice[device.id] || [];
+    quick.textContent = '';
+    quick.classList.toggle('hidden', commands.length === 0);
+    for (const cmd of commands) {
+      const btn = document.createElement('button');
+      btn.className = 'quick-chip';
+      btn.textContent = `▶ ${cmd.label}`;
+      btn.title = cmd.command;
+      btn.disabled = connect.disabled;
+      btn.addEventListener('click', () => {
+        save();
+        closeDevicesModal();
+        openTerminal({ device, user: user.value.trim(), persist: false, command: cmd });
+      });
+      quick.appendChild(btn);
+    }
+    renderQuickEditor(device, editor, renderQuick);
+  };
+  renderQuick();
+
+  row.appendChild(quick);
+  options.appendChild(editor);
   row.appendChild(options);
   return row;
+}
+
+// Add / remove quick commands for a device, inside its ⚙ panel.
+function renderQuickEditor(device, editor, onChange) {
+  const commands = quickCommandsByDevice[device.id] || [];
+  editor.textContent = '';
+
+  const heading = document.createElement('div');
+  heading.className = 'devices-section-label';
+  heading.textContent = 'Quick commands';
+  editor.appendChild(heading);
+
+  const persist = async (next, okMessage) => {
+    try {
+      await saveQuickCommands(device.id, next);
+      onChange();
+      if (okMessage) showToast(okMessage, 'success', 2000);
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  for (const cmd of commands) {
+    const item = document.createElement('div');
+    item.className = 'quick-item';
+    const text = document.createElement('div');
+    text.className = 'quick-item-text';
+    const label = document.createElement('div');
+    label.className = 'quick-item-label';
+    label.textContent = cmd.label;
+    const code = document.createElement('code');
+    code.textContent = cmd.command;
+    text.append(label, code);
+    const remove = document.createElement('button');
+    remove.className = 'btn btn-secondary btn-sm quick-remove';
+    remove.textContent = '✕';
+    remove.title = `Remove "${cmd.label}"`;
+    remove.addEventListener('click', () => {
+      if (!confirm(`Remove the quick command "${cmd.label}"?`)) return;
+      persist(commands.filter(c => c.id !== cmd.id), 'Quick command removed');
+    });
+    item.append(text, remove);
+    editor.appendChild(item);
+  }
+
+  const form = document.createElement('form');
+  form.className = 'quick-add';
+  const labelInput = document.createElement('input');
+  labelInput.className = 'form-input';
+  labelInput.placeholder = 'Name, e.g. RCON console';
+  labelInput.maxLength = 40;
+  const commandInput = document.createElement('input');
+  commandInput.className = 'form-input quick-add-command';
+  commandInput.placeholder = 'Command, e.g. mcrcon -H 127.0.0.1 -P 25575 -p …';
+  commandInput.autocapitalize = 'off';
+  commandInput.setAttribute('autocorrect', 'off');
+  commandInput.spellcheck = false;
+  commandInput.maxLength = 1000;
+  const add = document.createElement('button');
+  add.type = 'submit';
+  add.className = 'btn btn-success btn-sm';
+  add.textContent = 'Add';
+  form.append(labelInput, commandInput, add);
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const label = labelInput.value.trim();
+    const command = commandInput.value.trim();
+    if (!label || !command) {
+      showToast('Give the command a name and the command to run.', 'error');
+      return;
+    }
+    persist([...commands, { label, command }], `Added "${label}"`);
+  });
+  editor.appendChild(form);
+
+  const hint = document.createElement('small');
+  hint.className = 'quick-hint';
+  hint.textContent = 'Runs on the device in place of a shell; the session ends when the command exits. ' +
+    'Saved on the manager (owner-only file), so it shows up on all your devices.';
+  editor.appendChild(hint);
 }
 
 // ---------------------------------------------------------------------------
@@ -480,10 +624,11 @@ function setFontSize(size) {
 
 async function openTerminal(target) {
   closeTerminal();
-  const { device, user, persist } = target;
-  rememberRecent(device, user, persist);
-  document.getElementById('terminalTitle').textContent =
-    `${user ? `${user}@` : ''}${device.name}${persist ? ' (tmux)' : ''}`;
+  const { device, user, persist, command } = target;
+  rememberRecent(device, user, persist, command);
+  document.getElementById('terminalTitle').textContent = command
+    ? `${command.label} · ${device.name}`
+    : `${user ? `${user}@` : ''}${device.name}${persist ? ' (tmux)' : ''}`;
   setTerminalStatus('Connecting…', 'pending');
   terminalModal.classList.remove('hidden');
   fitToVisualViewport();
@@ -544,7 +689,8 @@ function connectTerminalSocket(state) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const params = new URLSearchParams({ device: target.device.id, rows: term.rows, cols: term.cols });
   if (target.user) params.set('user', target.user);
-  if (target.persist) params.set('persist', '1');
+  if (target.command) params.set('command', target.command.id);
+  else if (target.persist) params.set('persist', '1');
   const protocols = ['terminal'];
   if (apiToken) protocols.push('bearer.' + base64url(apiToken));
 
@@ -573,7 +719,9 @@ function connectTerminalSocket(state) {
   socket.onclose = (event) => {
     if (terminalState !== state || state.socket !== socket) return;
     term.options.cursorBlink = false;
-    document.getElementById('terminalReconnect').classList.remove('hidden');
+    const again = document.getElementById('terminalReconnect');
+    again.textContent = target.command ? '↻ Run again' : '↻ Reconnect';
+    again.classList.remove('hidden');
     if (!state.exited && !state.refused) {
       const reason = event.reason === 'Unauthorized' ? 'Not signed in (token rejected)' : 'Disconnected';
       setTerminalStatus(reason, 'error');
@@ -588,8 +736,11 @@ function reconnectTerminal() {
   state.dropped = false;
   state.refused = false;
   if (state.socket && state.socket.readyState === WebSocket.OPEN) return;
-  // tmux redraws the whole screen on attach; a plain shell starts fresh.
-  state.term.write('\r\n\x1b[90m--- reconnecting ---\x1b[0m\r\n');
+  // tmux redraws the whole screen on attach; a plain shell starts fresh, and a
+  // quick command runs again.
+  state.term.write(state.target.command
+    ? '\r\n\x1b[90m--- running again ---\x1b[0m\r\n'
+    : '\r\n\x1b[90m--- reconnecting ---\x1b[0m\r\n');
   setTerminalStatus('Connecting…', 'pending');
   connectTerminalSocket(state);
   state.term.focus();
@@ -600,7 +751,7 @@ function reconnectTerminal() {
 function onVisibilityChange() {
   const s = terminalState;
   if (document.visibilityState !== 'visible' || !s) return;
-  if (s.target.persist && s.dropped) reconnectTerminal();
+  if (s.target.persist && !s.target.command && s.dropped) reconnectTerminal();
 }
 
 function closeTerminal() {
