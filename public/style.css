@@ -1246,3 +1246,178 @@ main {
 .btn-delete:hover:not(:disabled) {
   opacity: 1;
 }
+
+/* Tailnet devices & SSH terminal */
+.modal-content.modal-wide {
+  max-width: 820px;
+}
+
+.devices-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.devices-notice {
+  background: #fff8e1;
+  border: 1px solid #ffe08a;
+  color: #7a5b00;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+}
+
+.devices-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.devices-empty {
+  color: #666;
+  text-align: center;
+  padding: 20px;
+}
+
+.device-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid #e6e6e6;
+  border-radius: 8px;
+}
+
+.device-info {
+  min-width: 0;
+}
+
+.device-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.device-name {
+  font-weight: 600;
+  color: #333;
+}
+
+.device-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.device-dot.online { background: #28a745; }
+.device-dot.offline { background: #bbb; }
+
+.device-tag {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #eef0ff;
+  color: #4a4fa8;
+}
+
+.device-tag-ssh {
+  background: #e6f7ec;
+  color: #1d7a3d;
+}
+
+.device-meta {
+  font-size: 0.85rem;
+  color: #777;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.device-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.device-actions .device-user {
+  width: 140px;
+  padding: 6px 10px;
+}
+
+.terminal-window {
+  background: #1e1e1e;
+  border-radius: 8px;
+  width: 95vw;
+  height: 90vh;
+  max-width: 1400px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+.terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #2d2d2d;
+  color: #ddd;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+}
+
+.terminal-title {
+  font-weight: 600;
+}
+
+.terminal-status {
+  flex: 1;
+  min-width: 0;
+  color: #aaa;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-status.ok { color: #6fcf97; }
+.terminal-status.pending { color: #f2c94c; }
+.terminal-status.error { color: #eb5757; }
+
+.terminal-header .terminal-close {
+  color: #ccc;
+}
+
+.terminal-header .terminal-close:hover {
+  background: #444;
+  color: #fff;
+}
+
+.terminal-container {
+  flex: 1;
+  min-height: 0;
+  padding: 6px;
+}
+
+@media (max-width: 640px) {
+  .device-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .device-actions .device-user {
+    flex: 1;
+    width: auto;
+  }
+
+  .terminal-window {
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    border-radius: 0;
+  }
+}

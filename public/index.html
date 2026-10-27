@@ -41,6 +41,9 @@
         <button class="btn btn-success btn-sm" id="btnAddProgram" title="Add a new program">
           <span>➕</span> Add Program
         </button>
+        <button class="btn btn-secondary btn-sm" id="btnDevices" title="Devices on your tailnet; open an SSH terminal to one">
+          <span>&gt;_</span> Devices
+        </button>
       </div>
     </header>
 
@@ -266,6 +269,35 @@
     </div>
   </div>
 
+  <!-- Tailnet Devices Modal -->
+  <div class="modal hidden" id="devicesModal">
+    <div class="modal-content modal-wide">
+      <div class="modal-header">
+        <h2>Devices</h2>
+        <div class="devices-header-actions">
+          <button class="btn btn-secondary btn-sm" id="btnRefreshDevices" title="Re-read tailscale status">↻ Refresh</button>
+          <button class="modal-close" id="devicesModalClose">✕</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="devices-notice hidden" id="devicesNotice"></div>
+        <div class="devices-list" id="devicesList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SSH Terminal Modal -->
+  <div class="modal hidden" id="terminalModal">
+    <div class="terminal-window">
+      <div class="terminal-header">
+        <span class="terminal-title" id="terminalTitle"></span>
+        <span class="terminal-status" id="terminalStatus"></span>
+        <button class="modal-close terminal-close" id="terminalClose" title="Close terminal (ends the SSH session)">✕</button>
+      </div>
+      <div class="terminal-container" id="terminalContainer"></div>
+    </div>
+  </div>
+
   <!-- Login Modal -->
   <div class="modal hidden" id="loginModal">
     <div class="modal-content modal-sm">
@@ -289,5 +321,6 @@
   </div>
 
   <script src="app.js"></script>
+  <script src="terminal.js"></script>
 </body>
 </html>

@@ -1,5 +1,12 @@
 # Remote Host SSH Prototype Plan
 
+> **Status:** tailnet device discovery and the browser SSH terminal (Phase 4) are
+> implemented in `remote-hosts/` (see the README section "SSH Terminal for tailnet
+> devices"). Hosts come from `tailscale status` instead of a hand-written registry,
+> and the terminal uses the system `ssh` client so `~/.ssh/config`, keys and
+> `known_hosts` apply. Phases 2, 3 and 5 (read-only status API and manager to
+> manager operations) are not built yet.
+
 ## Goal
 
 Allow HTTP Server Manager running on one Linux host (initially the NucBox) to connect to and manage another HTTP Server Manager host (initially the Raspberry Pi 4) over SSH through the existing Tailscale network.

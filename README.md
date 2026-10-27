@@ -19,6 +19,7 @@ A simple, self-configuring HTTP server manager that automatically detects your n
 - **❤️ Health Checks**: Live TCP port probing shows *listening* vs *running-but-not-serving* vs *crashed (exit code)* — not just "process alive"
 - **⏻ Autostart Toggle**: Flip autostart-on-boot per program right from its card
 - **🗂️ Persistent Logs**: Program output is mirrored to disk, so history survives a manager restart
+- **🖥️ Tailnet SSH Terminal**: Lists every device on your tailnet and opens an SSH terminal to one in the browser (see [SSH Terminal](#ssh-terminal-for-tailnet-devices))
 
 ## Prerequisites
 
@@ -194,6 +195,44 @@ You can also give a program an HTTPS Tailscale URL with `preferTailscale` /
 
 Whichever transport you pick, still set a token — a single compromised device on
 your private network should not inherit command access to this machine.
+
+### SSH Terminal for tailnet devices
+
+The **>_ Devices** button lists every device on this machine's tailnet (read from
+`tailscale status`, so there is nothing to configure) with its online state,
+MagicDNS name and Tailscale IP. **Connect** opens an SSH terminal to that device
+in the browser; it works on phones too.
+
+How it works: the manager runs the system `ssh` client, as the user the manager
+runs as, inside a pseudo-terminal, and streams it over a WebSocket to
+[xterm.js](https://xtermjs.org). So it behaves exactly like typing
+`ssh <device>` on the manager's machine: your `~/.ssh/config`, keys, agent and
+`known_hosts` all apply, and host-key or password prompts appear in the terminal.
+Closing the terminal or losing the connection ends the SSH session.
+
+Requirements and setup:
+
+- **An access token (`MANAGER_API_TOKEN`) is required.** A terminal is a shell, so
+  it stays off on an unauthenticated manager, even with `MANAGER_ALLOW_NO_AUTH`.
+  Set `MANAGER_SSH_TERMINAL=0` to turn it off with a token set too.
+- `ssh`, `python3` (for the pseudo-terminal) and the `tailscale` CLI on the manager
+  machine.
+- A way to log in to each device, either of:
+  - **Tailscale SSH** (simplest): run `sudo tailscale set --ssh` on the device.
+    Tailscale signs you in with your tailnet identity, so there are no keys to
+    manage. Devices with it on show a *Tailscale SSH* badge.
+  - **Regular OpenSSH with a key**, as the manager's user:
+    ```bash
+    ssh-keygen -t ed25519                # if you don't have a key yet
+    ssh-copy-id pi@raspberrypi           # once per device
+    ```
+- Put the login name in the box next to **Connect** (remembered per device in this
+  browser), or leave it blank to use `~/.ssh/config` / the manager's own user name.
+
+The browser only ever sends a device's Tailscale node ID; the manager connects to
+the address Tailscale reports for it, so the terminal can't be pointed at hosts
+outside your tailnet. Terminal connections must also come from the manager's own
+page (same-origin check), and each session's open and close are logged.
 
 ## Configuration
 
@@ -383,6 +422,8 @@ You can configure the server using these environment variables:
 - `MANAGER_TRUST_PROXY`: Set to `1` only when the manager sits behind a trusted
   reverse proxy, so `X-Forwarded-For` is used for the rate-limit client IP.
   Leave unset otherwise (the header would be spoofable)
+- `MANAGER_SSH_TERMINAL`: Set to `0` to disable the browser SSH terminal. It is
+  only ever enabled when `MANAGER_API_TOKEN` is set.
 - `MANAGER_LOG_DIR`: Where per-program logs are mirrored to disk (default: `logs/`)
 - `TAILSCALE_HOSTNAME` / `TS_CERT_DOMAIN`: Tailscale MagicDNS hostname for HTTPS
   program URLs when the `tailscale` CLI isn't available to the manager
@@ -457,6 +498,10 @@ endpoint below requires the `Authorization: Bearer` header** — only
 - `GET /api/config` - Get current configuration
 - `POST /api/rediscover` - Rediscover projects and regenerate config (requires auth)
 - `POST /api/import-repo` - Clone a git repo into the projects folder, scaffold a `Start.sh` if needed, and rediscover (requires auth). Body: `{ "repoUrl": "...", "branch": "optional", "name": "optional-folder-name" }`
+
+**Remote Hosts:**
+- `GET /api/remote-hosts` - Devices on this machine's tailnet and whether the SSH terminal is enabled (`?refresh=1` skips the 10 s cache)
+- `WS /ws/terminal?device=<node id>&user=<optional>&rows=&cols=` - SSH terminal to a device (requires the token and a same-origin page)
 
 **System:**
 - `GET /api/stats` - Get statistics

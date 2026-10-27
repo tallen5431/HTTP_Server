@@ -8,6 +8,7 @@ const path = require('path');
 const { spawn, execSync } = require('child_process');
 const express = require('express');
 const WebSocket = require('ws');
+const remoteHosts = require('./remote-hosts');
 
 // Configuration
 const CONFIG_FILE = process.env.CONFIG_FILE || './config.json';
@@ -40,6 +41,13 @@ const BIND_HOST = process.env.MANAGER_HOST ||
 // Extra Host header values to accept, comma-separated (e.g. a reverse-proxy
 // domain like manager.example.com). Loopback, raw IP literals, and *.ts.net
 // (Tailscale MagicDNS) are always allowed; see hostIsAllowed().
+// The browser SSH terminal needs the access token; MANAGER_SSH_TERMINAL=0 turns
+// it off entirely. See remote-hosts/index.js terminalPolicy().
+const TERMINAL_POLICY = remoteHosts.terminalPolicy({
+  apiToken: API_TOKEN,
+  setting: process.env.MANAGER_SSH_TERMINAL
+});
+
 const ALLOWED_HOSTS = new Set(
   String(process.env.MANAGER_ALLOWED_HOSTS || '')
     .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
@@ -921,6 +929,22 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(express.static('public'));
 
+// xterm.js for the SSH terminal, served from node_modules because the CSP only
+// allows same-origin scripts. Only these three files are exposed.
+const VENDOR_FILES = {
+  'xterm.js': '@xterm/xterm/lib/xterm.js',
+  'xterm.css': '@xterm/xterm/css/xterm.css',
+  'addon-fit.js': '@xterm/addon-fit/lib/addon-fit.js'
+};
+app.get('/vendor/:file', (req, res, next) => {
+  const mod = Object.prototype.hasOwnProperty.call(VENDOR_FILES, req.params.file)
+    ? VENDOR_FILES[req.params.file] : null;
+  if (!mod) return next();
+  let file;
+  try { file = require.resolve(mod); } catch (_) { return res.status(404).end(); }
+  res.sendFile(file);
+});
+
 // Gate the whole API behind the token — reads included. /api/config and the log
 // endpoints leak filesystem paths, env-var secrets, and program output, so
 // "reads are harmless" does not hold here. /api/health stays open so an external
@@ -1114,6 +1138,19 @@ app.get('/api/stats', (req, res) => {
   };
 
   res.json(stats);
+});
+
+// Devices on this machine's tailnet, and whether the SSH terminal is available.
+// A Tailscale failure is reported in the body (not as an HTTP error) so the UI
+// can explain it in place.
+app.get('/api/remote-hosts', async (req, res) => {
+  const terminal = { enabled: TERMINAL_POLICY.enabled, reason: TERMINAL_POLICY.reason };
+  try {
+    const devices = await remoteHosts.listTailscaleDevices({ fresh: req.query.refresh === '1' });
+    res.json({ terminal, devices, error: null });
+  } catch (err) {
+    res.json({ terminal, devices: [], error: err.message });
+  }
 });
 
 // Health check endpoint. Reflects real readiness: returns 503 when the config
@@ -2438,6 +2475,18 @@ async function startServer() {
       authFailures.delete(ip);
     }
 
+    let pathname = '/';
+    let query = new URLSearchParams();
+    try {
+      const u = new URL(req.url || '/', 'http://localhost');
+      pathname = u.pathname;
+      query = u.searchParams;
+    } catch (_) { /* malformed URL: treat as the status socket */ }
+    if (pathname === '/ws/terminal') {
+      handleTerminalSocket(ws, req, query);
+      return;
+    }
+
     ws.urlContext = getRequestUrlContext(req);
     wsClients.add(ws);
     console.log('WebSocket client connected');
@@ -2451,6 +2500,46 @@ async function startServer() {
       console.log('WebSocket client disconnected');
     });
   });
+
+  // A socket at /ws/terminal is an SSH session to one tailnet device. It is a
+  // shell, so on top of the Host and token checks above it requires the policy
+  // (token set) and a same-origin Origin header: browsers do not apply CORS to
+  // WebSockets, so without this any page you visit could open one.
+  async function handleTerminalSocket(ws, req, query) {
+    const fail = (message) => {
+      try { ws.send(JSON.stringify({ type: 'error', message })); } catch (_) { /* closed */ }
+      ws.close(1008, 'Terminal refused');
+    };
+    if (!TERMINAL_POLICY.enabled) return fail(TERMINAL_POLICY.reason);
+
+    let originHost = null;
+    try { originHost = new URL(req.headers.origin).host.toLowerCase(); } catch (_) { /* missing */ }
+    if (!originHost || originHost !== String(req.headers.host || '').toLowerCase()) {
+      return fail('Cross-origin terminal request rejected.');
+    }
+
+    const user = (query.get('user') || '').trim();
+    if (user && !remoteHosts.isValidSshUser(user)) return fail('Invalid SSH user name.');
+
+    let device;
+    try {
+      const devices = await remoteHosts.listTailscaleDevices();
+      device = devices.find(d => d.id === query.get('device'));
+    } catch (err) {
+      return fail(err.message);
+    }
+    if (!device) return fail('That device is not on this tailnet (try refreshing the list).');
+    if (ws.readyState !== WebSocket.OPEN) return;
+
+    const ip = clientIp(req);
+    remoteHosts.startTerminalSession(ws, {
+      device,
+      user,
+      rows: query.get('rows'),
+      cols: query.get('cols'),
+      log: (msg) => console.log(`[terminal] ${ip}: ${msg}`)
+    });
+  }
 
   server.listen(PORT, BIND_HOST, () => {
     const activeConfig = loadConfig();
@@ -2477,6 +2566,10 @@ async function startServer() {
         console.log('   To restrict to Tailscale only, set MANAGER_HOST to your 100.x.y.z address.');
       }
     }
+
+    console.log(TERMINAL_POLICY.enabled
+      ? '🖥  SSH terminal ENABLED for tailnet devices (MANAGER_SSH_TERMINAL=0 to disable).'
+      : `🖥  SSH terminal off: ${TERMINAL_POLICY.reason}`);
 
     console.log('\nAccess the web interface at:');
     console.log(`  http://localhost:${PORT}`);
@@ -2509,6 +2602,8 @@ async function startServer() {
       console.log('Server stopped');
       process.exit(0);
     });
+
+    remoteHosts.closeAllTerminalSessions();
 
     // Kill all running child processes (whole group each, so nothing is orphaned)
     for (const [id, proc] of processes.entries()) {
