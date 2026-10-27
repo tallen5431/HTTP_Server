@@ -477,6 +477,8 @@ function renderQuickEditor(device, editor, onChange) {
 // mode (vim and less switch it), and Ctrl/Alt latch until the next typed key.
 // ---------------------------------------------------------------------------
 const EXTRA_KEYS = [
+  { label: 'Select', action: () => openSelectMode(), className: 'terminal-key-action' },
+  { label: 'Paste', action: () => pasteIntoTerminal(), className: 'terminal-key-action' },
   { label: 'Esc', send: '\x1b' },
   { label: 'Tab', send: '\t' },
   { label: 'Ctrl', modifier: 'ctrl' },
@@ -539,6 +541,16 @@ function renderExtraKeys() {
     btn.textContent = key.label;
     btn.tabIndex = -1;
     if (key.modifier) btn.dataset.modifier = key.modifier;
+    if (key.className) btn.classList.add(key.className);
+
+    // Clipboard access needs a "user activation", which a touch pointerdown
+    // isn't (the tap only counts once the finger lifts), so these use click.
+    if (key.action) {
+      btn.addEventListener('pointerdown', (e) => e.preventDefault());
+      btn.addEventListener('click', key.action);
+      bar.appendChild(btn);
+      continue;
+    }
 
     let repeatTimer = null;
     const stopRepeat = () => {
@@ -564,6 +576,108 @@ function renderExtraKeys() {
     ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => btn.addEventListener(ev, stopRepeat));
     bar.appendChild(btn);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Copy & paste. xterm.js draws text that a phone's long-press selection can't
+// reach, and on plain http the browser won't let a page read the clipboard, so:
+// Select shows the terminal's text as ordinary selectable text, and Paste falls
+// back to a box you paste into with the phone's own menu.
+// ---------------------------------------------------------------------------
+function terminalText() {
+  const s = terminalState;
+  if (!s) return '';
+  const buffer = s.term.buffer.active;
+  const lines = [];
+  for (let i = 0; i < buffer.length; i++) {
+    const line = buffer.getLine(i);
+    if (!line) continue;
+    const text = line.translateToString(true);
+    // A wrapped line continues the previous one rather than starting a new one.
+    if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
+    else lines.push(text);
+  }
+  while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+  return lines.join('\n');
+}
+
+async function copyText(text) {
+  if (!text) {
+    showToast('Nothing to copy', 'info', 2000);
+    return false;
+  }
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Copied', 'success', 1500);
+      return true;
+    } catch (_) { /* fall through to the legacy path */ }
+  }
+  // Plain http: the async clipboard API is unavailable, but copying a selected
+  // textarea still works inside a tap.
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+  ta.remove();
+  showToast(ok ? 'Copied' : 'Copy was blocked; long-press the text and copy instead.',
+    ok ? 'success' : 'error', ok ? 1500 : 4000);
+  return ok;
+}
+
+function openSelectMode() {
+  const s = terminalState;
+  if (!s) return;
+  // On a desktop, text already selected with the mouse is copied straight away.
+  if (s.term.hasSelection()) {
+    copyText(s.term.getSelection());
+    s.term.clearSelection();
+    return;
+  }
+  const pre = document.getElementById('terminalSelectText');
+  pre.textContent = terminalText();
+  pre.style.fontSize = `${s.term.options.fontSize}px`;
+  document.getElementById('terminalSelect').classList.remove('hidden');
+  if (document.activeElement) document.activeElement.blur(); // put the keyboard away
+  pre.scrollTop = pre.scrollHeight; // newest output, like the terminal
+}
+
+function closeOverlays() {
+  document.getElementById('terminalSelect').classList.add('hidden');
+  document.getElementById('terminalPaste').classList.add('hidden');
+  window.getSelection().removeAllRanges();
+  if (terminalState) terminalState.term.focus();
+}
+
+function sendPaste(text) {
+  if (!terminalState || !text) return;
+  // term.paste() applies bracketed-paste mode when the program asked for it, so
+  // a pasted block isn't run line by line in shells and editors that support it.
+  terminalState.term.paste(text);
+}
+
+async function pasteIntoTerminal() {
+  if (!terminalState) return;
+  if (navigator.clipboard && navigator.clipboard.readText && window.isSecureContext) {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        sendPaste(text);
+        terminalState.term.focus();
+        return;
+      }
+    } catch (_) { /* permission denied: use the paste box */ }
+  }
+  const input = document.getElementById('terminalPasteInput');
+  input.value = '';
+  document.getElementById('terminalPaste').classList.remove('hidden');
+  input.focus();
 }
 
 function setExtraKeysVisible(visible) {
@@ -766,6 +880,8 @@ function closeTerminal() {
     state.term.dispose();
   }
   terminalModal.classList.add('hidden');
+  document.getElementById('terminalSelect').classList.add('hidden');
+  document.getElementById('terminalPaste').classList.add('hidden');
   resetViewportFit();
 }
 
@@ -791,6 +907,15 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('terminalKeysToggle').addEventListener('click', () => {
     setExtraKeysVisible(document.getElementById('terminalKeys').classList.contains('hidden'));
+  });
+
+  document.getElementById('terminalCopyAll').addEventListener('click', () => copyText(terminalText()));
+  document.getElementById('terminalSelectDone').addEventListener('click', closeOverlays);
+  document.getElementById('terminalPasteCancel').addEventListener('click', closeOverlays);
+  document.getElementById('terminalPasteSend').addEventListener('click', () => {
+    const text = document.getElementById('terminalPasteInput').value;
+    closeOverlays();
+    sendPaste(text);
   });
 
   renderExtraKeys();

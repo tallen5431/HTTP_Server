@@ -236,6 +236,16 @@ On a phone:
   arrows, Home/End, PgUp/PgDn and a few symbols. Ctrl and Alt latch for the next
   key you type: tap **Ctrl**, then `c` sends Ctrl+C. Arrows repeat while held.
   **⌨** shows or hides the row (shown by default on touch screens).
+- **Select** shows the terminal's text as ordinary text, so long-press selection
+  and the phone's Copy work; **Copy all** copies everything. On a computer, text
+  you already highlighted with the mouse is copied straight away. In a tmux
+  (Keep session) terminal, Select shows the current screen; use tmux's own
+  scroll-back (Ctrl+b then `[`) for older output.
+- **Paste** pastes the clipboard. Over plain `http://` the browser won't let the
+  page read the clipboard, so a box opens instead: long-press it, choose Paste,
+  then **Send to terminal**. Serving the manager over HTTPS (`tailscale serve`)
+  makes Paste one tap. Like a desktop terminal, pasted lines wait for Enter in
+  shells that support bracketed paste.
 - **A−** / **A+** change the text size, remembered per device.
 - The terminal shrinks to stay above the on-screen keyboard.
 - **Keep session (tmux)** (under **⚙**) runs the shell inside `tmux` on the device,
