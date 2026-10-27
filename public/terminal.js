@@ -592,7 +592,15 @@ function terminalText() {
   for (let i = 0; i < buffer.length; i++) {
     const line = buffer.getLine(i);
     if (!line) continue;
-    const text = line.translateToString(true);
+    // Trim trailing blanks only at the end of a logical line: when the next row
+    // continues this one, a space in the last column is part of the text
+    // ("echo hello " + "world" must not become "echo helloworld").
+    const next = buffer.getLine(i + 1);
+    const continues = Boolean(next && next.isWrapped);
+    let text = line.translateToString(!continues);
+    // xterm only trims cells that were never written; drop written trailing
+    // spaces too, as desktop terminals do when copying.
+    if (!continues) text = text.replace(/[ \t]+$/, '');
     // A wrapped line continues the previous one rather than starting a new one.
     if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
     else lines.push(text);
