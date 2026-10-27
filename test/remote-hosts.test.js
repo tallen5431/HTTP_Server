@@ -83,6 +83,15 @@ test('buildSshArgs: ends option parsing before the address', () => {
   assert.ok(!remoteHosts.buildSshArgs(device, '').includes('-l'));
 });
 
+test('buildSshArgs: keep-session wraps the shell in tmux with a fixed command', () => {
+  const args = remoteHosts.buildSshArgs({ address: '100.64.0.2' }, 'pi', { persist: true });
+  assert.ok(args.includes('-t'), 'a remote command needs -t to get a terminal');
+  assert.deepStrictEqual(args.slice(-3), ['--', '100.64.0.2', remoteHosts.PERSISTENT_SHELL_COMMAND]);
+  assert.match(remoteHosts.PERSISTENT_SHELL_COMMAND, /tmux new-session -A -s manager/);
+  // Falls back to a login shell where tmux is missing.
+  assert.match(remoteHosts.PERSISTENT_SHELL_COMMAND, /exec "\$\{SHELL:-\/bin\/sh\}" -l/);
+});
+
 // ---------------------------------------------------------------------------
 // End to end: the real manager, stub tailscale + ssh
 // ---------------------------------------------------------------------------
@@ -208,6 +217,17 @@ test('terminal: end to end over the WebSocket', async (t) => {
     assert.match(result.output, /SIZE:30 100/);
     assert.match(result.output, /GOT:hello/);
     assert.deepStrictEqual(result.control.at(-1), { type: 'exit', code: 3 });
+  });
+
+  await t.test('persist=1 runs the tmux command; anything else does not', async () => {
+    const kept = await openTerminal(port, { device: 'nPi', persist: '1' }, {
+      onOpen: (ws) => setTimeout(() => ws.send(JSON.stringify({ type: 'input', data: '\r' })), 300)
+    });
+    assert.match(kept.output, /ARGS:.* -t .*-- 100\.64\.0\.2 if command -v tmux/);
+    const plain = await openTerminal(port, { device: 'nPi', persist: 'yes' }, {
+      onOpen: (ws) => setTimeout(() => ws.send(JSON.stringify({ type: 'input', data: '\r' })), 300)
+    });
+    assert.doesNotMatch(plain.output, /tmux/);
   });
 
   await t.test('rejects a device that is not on the tailnet', async () => {

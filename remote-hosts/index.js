@@ -124,12 +124,24 @@ function terminalPolicy({ apiToken, setting }) {
   return { enabled: true, reason: null };
 }
 
+// "Keep session": run the shell inside tmux on the device, so a dropped
+// connection (a phone locking or switching apps) leaves it running and the next
+// connect re-attaches. Falls back to a plain login shell where tmux is missing.
+// A fixed string: nothing from the browser is ever part of the remote command.
+const TMUX_SESSION_NAME = 'manager';
+const PERSISTENT_SHELL_COMMAND =
+  `if command -v tmux >/dev/null 2>&1; then exec tmux new-session -A -s ${TMUX_SESSION_NAME}; ` +
+  'else echo "tmux is not installed here, so this session will not be kept (sudo apt install tmux)."; ' +
+  'exec "${SHELL:-/bin/sh}" -l; fi';
+
 // The ssh invocation for a device. `--` ends option parsing, so neither the
 // user nor the address can be read as an ssh option.
-function buildSshArgs(device, user) {
+function buildSshArgs(device, user, { persist = false } = {}) {
   const args = ['-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=4'];
+  if (persist) args.push('-t'); // ssh only allocates a terminal for a command when asked
   if (user) args.push('-l', user);
   args.push('--', device.address);
+  if (persist) args.push(PERSISTENT_SHELL_COMMAND);
   return args;
 }
 
@@ -145,7 +157,7 @@ const sessions = new Set();
 // Browser -> server: text frames of JSON, {type:'input', data} or
 // {type:'resize', rows, cols}. Server -> browser: binary frames are terminal
 // output; text frames are JSON {type:'exit', code} or {type:'error', message}.
-function startTerminalSession(ws, { device, user, rows, cols, log = () => {} }) {
+function startTerminalSession(ws, { device, user, persist = false, rows, cols, log = () => {} }) {
   const sendControl = (msg) => {
     if (ws.readyState === 1) ws.send(JSON.stringify(msg));
   };
@@ -158,14 +170,15 @@ function startTerminalSession(ws, { device, user, rows, cols, log = () => {} }) 
 
   const r = clampDimension(rows, 24);
   const c = clampDimension(cols, 80);
-  const child = spawn('python3', [PTY_BRIDGE, String(r), String(c), '--', 'ssh', ...buildSshArgs(device, user)], {
+  const child = spawn('python3', [PTY_BRIDGE, String(r), String(c), '--', 'ssh', ...buildSshArgs(device, user, { persist })], {
     stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
     env: { ...process.env, TERM: 'xterm-256color' }
   });
   const control = child.stdio[3];
   const session = { child, device, user };
   sessions.add(session);
-  log(`opened SSH terminal to ${device.name} (${device.address})${user ? ` as ${user}` : ''}`);
+  log(`opened SSH terminal to ${device.name} (${device.address})${user ? ` as ${user}` : ''}` +
+    (persist ? ' in tmux' : ''));
 
   let ended = false;
   const end = (code, message) => {
@@ -250,6 +263,7 @@ module.exports = {
   terminalPolicy,
   isValidSshUser,
   buildSshArgs,
+  PERSISTENT_SHELL_COMMAND,
   startTerminalSession,
   closeAllTerminalSessions,
   MAX_SESSIONS

@@ -635,7 +635,10 @@ function updateProgramCard(card, program) {
     nameElement.textContent = program.name;
   }
 
-  card.querySelector('.program-path').textContent = program.path;
+  // The status feed doesn't carry the path (it's in Edit), so don't show an
+  // empty "Path:" row.
+  card.querySelector('.program-path').textContent = program.path || '';
+  card.querySelector('.program-path-row').classList.toggle('hidden', !program.path);
   card.querySelector('.program-pid').textContent = program.pid || 'N/A';
 
   // Handle uptime display

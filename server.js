@@ -2535,6 +2535,7 @@ async function startServer() {
     remoteHosts.startTerminalSession(ws, {
       device,
       user,
+      persist: query.get('persist') === '1',
       rows: query.get('rows'),
       cols: query.get('cols'),
       log: (msg) => console.log(`[terminal] ${ip}: ${msg}`)

@@ -226,8 +226,26 @@ Requirements and setup:
     ssh-keygen -t ed25519                # if you don't have a key yet
     ssh-copy-id pi@raspberrypi           # once per device
     ```
-- Put the login name in the box next to **Connect** (remembered per device in this
-  browser), or leave it blank to use `~/.ssh/config` / the manager's own user name.
+- Set the login name with the **⚙** button next to **Connect** (remembered per
+  device in this browser), or leave it blank to use `~/.ssh/config` / the manager's
+  own user name.
+
+On a phone:
+
+- A row of extra keys sits under the terminal: **Esc**, **Tab**, **Ctrl**, **Alt**,
+  arrows, Home/End, PgUp/PgDn and a few symbols. Ctrl and Alt latch for the next
+  key you type: tap **Ctrl**, then `c` sends Ctrl+C. Arrows repeat while held.
+  **⌨** shows or hides the row (shown by default on touch screens).
+- **A−** / **A+** change the text size, remembered per device.
+- The terminal shrinks to stay above the on-screen keyboard.
+- **Keep session (tmux)** (under **⚙**) runs the shell inside `tmux` on the device,
+  so it keeps running when the phone locks or you switch apps. Coming back to the
+  page reconnects to the same session automatically; **↻ Reconnect** does it by
+  hand. The device needs tmux (`sudo apt install tmux`); without it you get a
+  normal shell and a note saying so. Every keep-session connection to a device
+  joins the same tmux session (`manager`), so two tabs see the same screen.
+- **Recent** at the top of the Devices list reconnects to your last few devices
+  in one tap.
 
 The browser only ever sends a device's Tailscale node ID; the manager connects to
 the address Tailscale reports for it, so the terminal can't be pointed at hosts
@@ -501,7 +519,7 @@ endpoint below requires the `Authorization: Bearer` header** — only
 
 **Remote Hosts:**
 - `GET /api/remote-hosts` - Devices on this machine's tailnet and whether the SSH terminal is enabled (`?refresh=1` skips the 10 s cache)
-- `WS /ws/terminal?device=<node id>&user=<optional>&rows=&cols=` - SSH terminal to a device (requires the token and a same-origin page)
+- `WS /ws/terminal?device=<node id>&user=<optional>&persist=1&rows=&cols=` - SSH terminal to a device (requires the token and a same-origin page)
 
 **System:**
 - `GET /api/stats` - Get statistics

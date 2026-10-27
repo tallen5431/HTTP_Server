@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
   <title>HTTP Server Manager</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%96%A5%EF%B8%8F%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
@@ -96,7 +96,7 @@
         <span class="program-status badge"></span>
       </div>
       <div class="program-info">
-        <div class="info-row">
+        <div class="info-row program-path-row">
           <span class="label">Path:</span>
           <span class="value program-path"></span>
         </div>
@@ -281,6 +281,10 @@
       </div>
       <div class="modal-body">
         <div class="devices-notice hidden" id="devicesNotice"></div>
+        <div class="devices-recent hidden" id="devicesRecent">
+          <div class="devices-section-label">Recent</div>
+          <div class="devices-recent-list" id="devicesRecentList"></div>
+        </div>
         <div class="devices-list" id="devicesList"></div>
       </div>
     </div>
@@ -292,9 +296,14 @@
       <div class="terminal-header">
         <span class="terminal-title" id="terminalTitle"></span>
         <span class="terminal-status" id="terminalStatus"></span>
-        <button class="modal-close terminal-close" id="terminalClose" title="Close terminal (ends the SSH session)">✕</button>
+        <button class="terminal-btn hidden" id="terminalReconnect" title="Connect again">↻ Reconnect</button>
+        <button class="terminal-btn" id="terminalFontDown" title="Smaller text">A−</button>
+        <button class="terminal-btn" id="terminalFontUp" title="Larger text">A+</button>
+        <button class="terminal-btn" id="terminalKeysToggle" title="Show or hide the extra keys (Esc, Ctrl, arrows…)">⌨</button>
+        <button class="modal-close terminal-close" id="terminalClose" title="Close terminal">✕</button>
       </div>
       <div class="terminal-container" id="terminalContainer"></div>
+      <div class="terminal-keys" id="terminalKeys"></div>
     </div>
   </div>
 

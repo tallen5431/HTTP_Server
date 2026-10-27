@@ -514,6 +514,12 @@ main {
   animation: spin 1s linear infinite;
 }
 
+/* Declared after the generic .hidden, so it needs its own hidden rule;
+   otherwise every button shows a spinning ⟳ all the time. */
+.btn-spinner.hidden {
+  display: none;
+}
+
 @keyframes spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
@@ -1247,9 +1253,11 @@ main {
   opacity: 1;
 }
 
-/* Tailnet devices & SSH terminal */
+/* ---------------------------------------------------------------------------
+   Tailnet devices & SSH terminal
+   --------------------------------------------------------------------------- */
 .modal-content.modal-wide {
-  max-width: 820px;
+  max-width: 720px;
 }
 
 .devices-header-actions {
@@ -1268,6 +1276,62 @@ main {
   font-size: 0.9rem;
 }
 
+.devices-section-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+.devices-recent {
+  margin-bottom: 18px;
+}
+
+.devices-recent-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.recent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid #cfd8ff;
+  background: #f3f5ff;
+  color: #333;
+  border-radius: 20px;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.recent-chip span:not(.device-dot) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-chip:hover:not(:disabled) {
+  background: #e6eaff;
+}
+
+.recent-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.recent-chip-tag {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #4a4fa8;
+}
+
 .devices-list {
   display: flex;
   flex-direction: column;
@@ -1281,29 +1345,34 @@ main {
 }
 
 .device-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border: 1px solid #e6e6e6;
   border-radius: 8px;
 }
 
+.device-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .device-info {
   min-width: 0;
+  flex: 1;
 }
 
 .device-title {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px 8px;
 }
 
 .device-name {
   font-weight: 600;
   color: #333;
+  overflow-wrap: anywhere;
 }
 
 .device-dot {
@@ -1317,11 +1386,12 @@ main {
 .device-dot.offline { background: #bbb; }
 
 .device-tag {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   padding: 2px 8px;
   border-radius: 10px;
   background: #eef0ff;
   color: #4a4fa8;
+  white-space: nowrap;
 }
 
 .device-tag-ssh {
@@ -1330,29 +1400,93 @@ main {
 }
 
 .device-meta {
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   color: #777;
-  margin-top: 4px;
+  margin-top: 3px;
   overflow-wrap: anywhere;
+}
+
+.device-summary {
+  font-size: 0.82rem;
+  color: #4a4fa8;
+  margin-top: 2px;
+}
+
+.device-summary:empty {
+  display: none;
 }
 
 .device-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
-.device-actions .device-user {
-  width: 140px;
-  padding: 6px 10px;
+.device-actions .btn {
+  white-space: nowrap;
 }
 
+.device-settings {
+  padding: 8px 10px;
+  background: #eceff1;
+  color: #455a64;
+}
+
+.device-settings:hover:not(:disabled),
+.device-settings.active {
+  background: #cfd8dc;
+  color: #263238;
+}
+
+.device-no-ssh {
+  font-size: 0.8rem;
+  color: #999;
+  flex-shrink: 0;
+}
+
+.device-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.device-options.hidden {
+  display: none;
+}
+
+.device-options .device-user {
+  flex: 1 1 160px;
+  min-width: 0;
+  width: auto;
+  padding: 8px 10px;
+}
+
+.device-keep {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.88rem;
+  color: #444;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.device-keep input {
+  width: 18px;
+  height: 18px;
+}
+
+/* Terminal window */
 .terminal-window {
   background: #1e1e1e;
   border-radius: 8px;
   width: 95vw;
-  height: 90vh;
+  height: 90%;
   max-width: 1400px;
   display: flex;
   flex-direction: column;
@@ -1363,20 +1497,26 @@ main {
 .terminal-header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
   background: #2d2d2d;
   color: #ddd;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.9rem;
+  flex-shrink: 0;
 }
 
 .terminal-title {
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .terminal-status {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
   color: #aaa;
   overflow: hidden;
@@ -1388,8 +1528,41 @@ main {
 .terminal-status.pending { color: #f2c94c; }
 .terminal-status.error { color: #eb5757; }
 
+.terminal-btn {
+  background: #3a3a3a;
+  color: #ddd;
+  border: none;
+  border-radius: 5px;
+  padding: 6px 10px;
+  min-width: 36px;
+  min-height: 32px;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.terminal-btn:hover {
+  background: #4a4a4a;
+}
+
+.terminal-btn.active {
+  background: #2f5f8f;
+  color: #fff;
+}
+
+#terminalReconnect {
+  background: #2f6f3f;
+  color: #fff;
+}
+
+.terminal-btn.hidden {
+  display: none;
+}
+
 .terminal-header .terminal-close {
   color: #ccc;
+  flex-shrink: 0;
 }
 
 .terminal-header .terminal-close:hover {
@@ -1400,24 +1573,225 @@ main {
 .terminal-container {
   flex: 1;
   min-height: 0;
-  padding: 6px;
 }
 
+/* Padding goes on xterm's own element: the fit addon subtracts that, but
+   counts a padded container's full border-box width as usable columns. */
+.terminal-container .xterm {
+  height: 100%;
+  padding: 4px 6px;
+}
+
+/* Extra keys for phones: one scrollable row of big tap targets. */
+.terminal-keys {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  background: #2d2d2d;
+  overflow-x: auto;
+  flex-shrink: 0;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.terminal-keys::-webkit-scrollbar {
+  display: none;
+}
+
+.terminal-keys.hidden {
+  display: none;
+}
+
+.terminal-key {
+  flex: 0 0 auto;
+  min-width: 44px;
+  height: 40px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: #444;
+  color: #eee;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+}
+
+.terminal-key:active {
+  background: #666;
+}
+
+.terminal-key.active {
+  background: #2f80ed;
+  color: #fff;
+}
+
+/* ---------------------------------------------------------------------------
+   Phone layout
+   --------------------------------------------------------------------------- */
 @media (max-width: 640px) {
-  .device-row {
-    flex-direction: column;
-    align-items: stretch;
+  body {
+    padding: 10px;
   }
 
-  .device-actions .device-user {
+  header {
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+
+  .header-content {
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  h1 {
+    font-size: 1.3rem;
+  }
+
+  .connection-status {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  /* Seven buttons as an even 3-column grid instead of ragged centered rows. */
+  .bulk-actions {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+
+  .bulk-actions .btn {
+    padding: 9px 4px;
+    font-size: 0.78rem;
+    line-height: 1.2;
+    text-align: center;
+    gap: 4px;
+  }
+
+  .toolbar {
+    padding: 12px;
+    margin-bottom: 12px;
+    gap: 10px;
+  }
+
+  .stats-bar {
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .stat-item {
+    gap: 4px;
+  }
+
+  .stat-value {
+    min-width: 0;
+    font-size: 1.05rem;
+  }
+
+  .search-input {
+    padding: 8px 36px 8px 14px;
+  }
+
+  .programs-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .program-card {
+    padding: 14px;
+    min-width: 0;
+  }
+
+  .info-row {
+    gap: 8px;
+  }
+
+  .info-row .label {
+    min-width: 72px;
+  }
+
+  .info-row .value {
+    min-width: 0;
     flex: 1;
-    width: auto;
+  }
+
+  .program-card:hover {
+    transform: none;
+  }
+
+  .program-header {
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+    gap: 10px;
+  }
+
+  .program-name {
+    font-size: 1.15rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .program-actions {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+
+  .program-actions .btn {
+    padding: 9px 4px;
+    font-size: 0.8rem;
+  }
+
+  /* One line per address, truncated, instead of breaking hostnames mid-word. */
+  .program-url-item {
+    flex-wrap: nowrap;
+  }
+
+  .program-url {
+    word-break: normal;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  /* Devices: full-screen sheet. */
+  #devicesModal .modal-content {
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+  }
+
+  #devicesModal .modal-body {
+    padding: 14px;
+  }
+
+  .device-options .device-user {
+    font-size: 16px; /* below 16px iOS zooms the page on focus */
   }
 
   .terminal-window {
-    width: 100vw;
-    height: 100vh;
-    height: 100dvh;
+    width: 100%;
+    height: 100%;
     border-radius: 0;
+  }
+
+  .terminal-header {
+    gap: 4px;
+    padding-left: 10px;
+  }
+
+  .terminal-btn {
+    padding: 6px 7px;
+    min-width: 34px;
+  }
+
+  /* No room for "Connected" next to the buttons; problems still show. */
+  .terminal-status.ok {
+    display: none;
   }
 }
