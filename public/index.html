@@ -302,7 +302,31 @@
         <button class="terminal-btn" id="terminalKeysToggle" title="Show or hide the extra keys (Esc, Ctrl, arrows…)">⌨</button>
         <button class="modal-close terminal-close" id="terminalClose" title="Close terminal">✕</button>
       </div>
-      <div class="terminal-container" id="terminalContainer"></div>
+      <div class="terminal-body">
+        <div class="terminal-container" id="terminalContainer"></div>
+        <!-- Select mode: the terminal's text as ordinary page text, so a phone's
+             long-press selection works on it. -->
+        <div class="terminal-overlay hidden" id="terminalSelect">
+          <div class="terminal-overlay-bar">
+            <span class="terminal-overlay-hint">Long-press to select, then Copy</span>
+            <button class="terminal-btn" id="terminalCopyAll">Copy all</button>
+            <button class="terminal-btn" id="terminalSelectDone">Done</button>
+          </div>
+          <pre class="terminal-select-text" id="terminalSelectText"></pre>
+        </div>
+        <!-- Paste fallback when the page can't read the clipboard (plain http). -->
+        <div class="terminal-overlay hidden" id="terminalPaste">
+          <div class="terminal-overlay-bar">
+            <span class="terminal-overlay-hint">Long-press the box and choose Paste</span>
+          </div>
+          <textarea class="terminal-paste-input" id="terminalPasteInput" autocapitalize="off"
+            autocorrect="off" autocomplete="off" spellcheck="false"></textarea>
+          <div class="terminal-overlay-actions">
+            <button class="terminal-btn" id="terminalPasteCancel">Cancel</button>
+            <button class="terminal-btn terminal-btn-primary" id="terminalPasteSend">Send to terminal</button>
+          </div>
+        </div>
+      </div>
       <div class="terminal-keys" id="terminalKeys"></div>
     </div>
   </div>

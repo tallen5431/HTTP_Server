@@ -236,6 +236,16 @@ On a phone:
   arrows, Home/End, PgUp/PgDn and a few symbols. Ctrl and Alt latch for the next
   key you type: tap **Ctrl**, then `c` sends Ctrl+C. Arrows repeat while held.
   **⌨** shows or hides the row (shown by default on touch screens).
+- **Select** shows the terminal's text as ordinary text, so long-press selection
+  and the phone's Copy work; **Copy all** copies everything. On a computer, text
+  you already highlighted with the mouse is copied straight away. In a tmux
+  (Keep session) terminal, Select shows the current screen; use tmux's own
+  scroll-back (Ctrl+b then `[`) for older output.
+- **Paste** pastes the clipboard. Over plain `http://` the browser won't let the
+  page read the clipboard, so a box opens instead: long-press it, choose Paste,
+  then **Send to terminal**. Serving the manager over HTTPS (`tailscale serve`)
+  makes Paste one tap. Like a desktop terminal, pasted lines wait for Enter in
+  shells that support bracketed paste.
 - **A−** / **A+** change the text size, remembered per device.
 - The terminal shrinks to stay above the on-screen keyboard.
 - **Keep session (tmux)** (under **⚙**) runs the shell inside `tmux` on the device,
@@ -246,6 +256,21 @@ On a phone:
   joins the same tmux session (`manager`), so two tabs see the same screen.
 - **Recent** at the top of the Devices list reconnects to your last few devices
   in one tap.
+
+**Quick commands:** under a device's **⚙**, save commands you run often, such as
+`mcrcon -H 127.0.0.1 -P 25575 -p <password>` for a Minecraft RCON console. Each
+one becomes a **▶** button on that device's row; tapping it opens the terminal
+running that command instead of a shell, and the session ends when the command
+exits (**↻ Run again** restarts it). They're saved on the manager in
+`quick-commands.json` (owner-only permissions, git-ignored; override the path with
+`MANAGER_QUICK_COMMANDS_FILE`), so every phone and PC you sign in from sees the
+same list. Commands can contain passwords, so treat that file like the token.
+The terminal only ever receives a command's ID, and the manager looks the text
+up from the file. Logs record the command's name, never its text.
+
+**No password prompts:** the manager doesn't store SSH passwords. Turn on
+Tailscale SSH on the device, or copy a key from the manager's machine
+(`ssh-copy-id user@device`, run as the user the manager runs as).
 
 The browser only ever sends a device's Tailscale node ID; the manager connects to
 the address Tailscale reports for it, so the terminal can't be pointed at hosts
@@ -442,6 +467,8 @@ You can configure the server using these environment variables:
   Leave unset otherwise (the header would be spoofable)
 - `MANAGER_SSH_TERMINAL`: Set to `0` to disable the browser SSH terminal. It is
   only ever enabled when `MANAGER_API_TOKEN` is set.
+- `MANAGER_QUICK_COMMANDS_FILE`: Where saved terminal quick commands are stored
+  (default: `quick-commands.json` next to the install; owner-only, may hold passwords)
 - `MANAGER_LOG_DIR`: Where per-program logs are mirrored to disk (default: `logs/`)
 - `TAILSCALE_HOSTNAME` / `TS_CERT_DOMAIN`: Tailscale MagicDNS hostname for HTTPS
   program URLs when the `tailscale` CLI isn't available to the manager
@@ -519,7 +546,9 @@ endpoint below requires the `Authorization: Bearer` header** — only
 
 **Remote Hosts:**
 - `GET /api/remote-hosts` - Devices on this machine's tailnet and whether the SSH terminal is enabled (`?refresh=1` skips the 10 s cache)
-- `WS /ws/terminal?device=<node id>&user=<optional>&persist=1&rows=&cols=` - SSH terminal to a device (requires the token and a same-origin page)
+- `GET /api/quick-commands` - Saved quick commands, `{ "<node id>": [{ "id", "label", "command" }] }`
+- `PUT /api/quick-commands/:deviceId` - Replace a device's quick commands. Body: `{ "commands": [{ "id"?, "label", "command" }] }`
+- `WS /ws/terminal?device=<node id>&user=<optional>&persist=1&command=<quick command id>&rows=&cols=` - SSH terminal to a device (requires the token and a same-origin page)
 
 **System:**
 - `GET /api/stats` - Get statistics

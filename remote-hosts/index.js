@@ -135,13 +135,16 @@ const PERSISTENT_SHELL_COMMAND =
   'exec "${SHELL:-/bin/sh}" -l; fi';
 
 // The ssh invocation for a device. `--` ends option parsing, so neither the
-// user nor the address can be read as an ssh option.
-function buildSshArgs(device, user, { persist = false } = {}) {
+// user nor the address can be read as an ssh option. `command` is a saved
+// quick command (from quick-commands.json, never from the request); it runs in
+// place of the shell, so the session ends when the command does.
+function buildSshArgs(device, user, { persist = false, command = null } = {}) {
+  const remoteCommand = command || (persist ? PERSISTENT_SHELL_COMMAND : null);
   const args = ['-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=4'];
-  if (persist) args.push('-t'); // ssh only allocates a terminal for a command when asked
+  if (remoteCommand) args.push('-t'); // ssh only allocates a terminal for a command when asked
   if (user) args.push('-l', user);
   args.push('--', device.address);
-  if (persist) args.push(PERSISTENT_SHELL_COMMAND);
+  if (remoteCommand) args.push(remoteCommand);
   return args;
 }
 
@@ -157,7 +160,7 @@ const sessions = new Set();
 // Browser -> server: text frames of JSON, {type:'input', data} or
 // {type:'resize', rows, cols}. Server -> browser: binary frames are terminal
 // output; text frames are JSON {type:'exit', code} or {type:'error', message}.
-function startTerminalSession(ws, { device, user, persist = false, rows, cols, log = () => {} }) {
+function startTerminalSession(ws, { device, user, persist = false, quickCommand = null, rows, cols, log = () => {} }) {
   const sendControl = (msg) => {
     if (ws.readyState === 1) ws.send(JSON.stringify(msg));
   };
@@ -170,7 +173,8 @@ function startTerminalSession(ws, { device, user, persist = false, rows, cols, l
 
   const r = clampDimension(rows, 24);
   const c = clampDimension(cols, 80);
-  const child = spawn('python3', [PTY_BRIDGE, String(r), String(c), '--', 'ssh', ...buildSshArgs(device, user, { persist })], {
+  const child = spawn('python3', [PTY_BRIDGE, String(r), String(c), '--', 'ssh',
+    ...buildSshArgs(device, user, { persist, command: quickCommand && quickCommand.command })], {
     stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
     env: { ...process.env, TERM: 'xterm-256color' }
   });
@@ -178,7 +182,8 @@ function startTerminalSession(ws, { device, user, persist = false, rows, cols, l
   const session = { child, device, user };
   sessions.add(session);
   log(`opened SSH terminal to ${device.name} (${device.address})${user ? ` as ${user}` : ''}` +
-    (persist ? ' in tmux' : ''));
+    // The label only: the command itself may carry a password.
+    (quickCommand ? ` running "${quickCommand.label}"` : persist ? ' in tmux' : ''));
 
   let ended = false;
   const end = (code, message) => {

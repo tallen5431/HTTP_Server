@@ -9,6 +9,7 @@ const { spawn, execSync } = require('child_process');
 const express = require('express');
 const WebSocket = require('ws');
 const remoteHosts = require('./remote-hosts');
+const quickCommands = require('./remote-hosts/quick-commands');
 
 // Configuration
 const CONFIG_FILE = process.env.CONFIG_FILE || './config.json';
@@ -47,6 +48,11 @@ const TERMINAL_POLICY = remoteHosts.terminalPolicy({
   apiToken: API_TOKEN,
   setting: process.env.MANAGER_SSH_TERMINAL
 });
+
+// Saved per-device terminal commands. Owner-only and git-ignored, since
+// commands can include passwords. See remote-hosts/quick-commands.js.
+const QUICK_COMMANDS_FILE = process.env.MANAGER_QUICK_COMMANDS_FILE ||
+  path.resolve(__dirname, 'quick-commands.json');
 
 const ALLOWED_HOSTS = new Set(
   String(process.env.MANAGER_ALLOWED_HOSTS || '')
@@ -1150,6 +1156,27 @@ app.get('/api/remote-hosts', async (req, res) => {
     res.json({ terminal, devices, error: null });
   } catch (err) {
     res.json({ terminal, devices: [], error: err.message });
+  }
+});
+
+// Quick commands: { deviceId: [{ id, label, command }] }. Only served when the
+// terminal is enabled; they're useless without it, and can contain secrets.
+app.get('/api/quick-commands', (req, res) => {
+  if (!TERMINAL_POLICY.enabled) return res.json({});
+  res.json(quickCommands.loadQuickCommands(QUICK_COMMANDS_FILE));
+});
+
+// Replace one device's list. Body: { commands: [{ id?, label, command }] }.
+app.put('/api/quick-commands/:deviceId', (req, res) => {
+  if (!TERMINAL_POLICY.enabled) {
+    return res.status(403).json({ success: false, error: TERMINAL_POLICY.reason });
+  }
+  try {
+    const commands = quickCommands.setDeviceCommands(
+      QUICK_COMMANDS_FILE, req.params.deviceId, req.body && req.body.commands);
+    res.json({ success: true, commands });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
   }
 });
 
@@ -2521,6 +2548,14 @@ async function startServer() {
     const user = (query.get('user') || '').trim();
     if (user && !remoteHosts.isValidSshUser(user)) return fail('Invalid SSH user name.');
 
+    // A quick command is named by ID; its text only ever comes from the file.
+    let quickCommand = null;
+    if (query.get('command')) {
+      quickCommand = quickCommands.findQuickCommand(
+        QUICK_COMMANDS_FILE, query.get('device') || '', query.get('command'));
+      if (!quickCommand) return fail('That quick command no longer exists.');
+    }
+
     let device;
     try {
       const devices = await remoteHosts.listTailscaleDevices();
@@ -2536,6 +2571,7 @@ async function startServer() {
       device,
       user,
       persist: query.get('persist') === '1',
+      quickCommand,
       rows: query.get('rows'),
       cols: query.get('cols'),
       log: (msg) => console.log(`[terminal] ${ip}: ${msg}`)
