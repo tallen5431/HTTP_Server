@@ -20,6 +20,8 @@
     "node": ">=14"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "express": "^4.21.2",
     "ws": "^8.14.2"
   }

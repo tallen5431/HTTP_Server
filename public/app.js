@@ -635,7 +635,10 @@ function updateProgramCard(card, program) {
     nameElement.textContent = program.name;
   }
 
-  card.querySelector('.program-path').textContent = program.path;
+  // The status feed doesn't carry the path (it's in Edit), so don't show an
+  // empty "Path:" row.
+  card.querySelector('.program-path').textContent = program.path || '';
+  card.querySelector('.program-path-row').classList.toggle('hidden', !program.path);
   card.querySelector('.program-pid').textContent = program.pid || 'N/A';
 
   // Handle uptime display
@@ -1531,9 +1534,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
+    // Every key belongs to an open terminal (Escape for vim, Ctrl+K/F for the shell).
+    if (terminalIsOpen()) return;
+
     // Escape: Close modal or clear search
     if (e.key === 'Escape') {
-      if (importModal && !importModal.classList.contains('hidden')) {
+      if (!devicesModal.classList.contains('hidden')) {
+        closeDevicesModal();
+      } else if (importModal && !importModal.classList.contains('hidden')) {
         closeImportModal();
       } else if (!programModal.classList.contains('hidden')) {
         closeModal();
