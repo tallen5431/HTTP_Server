@@ -1989,3 +1989,53 @@ main {
   background: #2b4f75;
   color: #e6f0ff;
 }
+
+/* Password prompt hint and private password entry, along the bottom of the
+   terminal so the prompt itself stays visible above. */
+.terminal-prompt-hint,
+.terminal-password {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  background: #2b3a4a;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.terminal-prompt-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  color: #cfe3ff;
+  font-size: 0.9rem;
+}
+
+.terminal-prompt-hint.hidden,
+.terminal-password.hidden {
+  display: none;
+}
+
+.terminal-password-row {
+  display: flex;
+  gap: 6px;
+  padding: 8px 8px 0;
+}
+
+.terminal-password-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  background: #111;
+  color: #eee;
+  border: 1px solid #555;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 16px; /* below 16px iOS zooms the page on focus */
+}
+
+.terminal-password .terminal-overlay-actions {
+  background: transparent;
+}

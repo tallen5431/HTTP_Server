@@ -326,6 +326,27 @@
             <button class="terminal-btn terminal-btn-primary" id="terminalPasteSend">Send to terminal</button>
           </div>
         </div>
+        <!-- Shown when the terminal is asking for a password (sudo, ssh, ...). -->
+        <div class="terminal-prompt-hint hidden" id="terminalPasswordHint">
+          <span>🔑 Password prompt</span>
+          <button class="terminal-btn terminal-btn-primary" id="terminalPasswordHintOpen">Type password</button>
+        </div>
+        <!-- A real password field: phone keyboards turn off prediction, suggestions
+             and learning for these, and nothing is drawn in the terminal. Not a
+             <form>, so the browser doesn't offer to save it. -->
+        <div class="terminal-password hidden" id="terminalPassword">
+          <div class="terminal-password-row">
+            <input type="password" class="terminal-password-input" id="terminalPasswordInput"
+              autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+              data-lpignore="true" data-1p-ignore placeholder="Password" aria-label="Password to send">
+            <button class="terminal-btn" id="terminalPasswordShow" title="Show or hide what you typed">👁</button>
+          </div>
+          <div class="terminal-overlay-actions">
+            <span class="terminal-overlay-hint">Sent with Enter. Not shown, not saved.</span>
+            <button class="terminal-btn" id="terminalPasswordCancel">Cancel</button>
+            <button class="terminal-btn terminal-btn-primary" id="terminalPasswordSend">Send</button>
+          </div>
+        </div>
       </div>
       <div class="terminal-keys" id="terminalKeys"></div>
     </div>

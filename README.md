@@ -236,6 +236,13 @@ On a phone:
   arrows, Home/End, PgUp/PgDn and a few symbols. Ctrl and Alt latch for the next
   key you type: tap **Ctrl**, then `c` sends Ctrl+C. Arrows repeat while held.
   **⌨** shows or hides the row (shown by default on touch screens).
+- **Passwords:** when the terminal asks for a password (sudo, ssh, a key
+  passphrase), a **Type password** button appears; **🔑** in the extra-keys row
+  opens the same field any time. It's a real password field, so the phone
+  keyboard turns off prediction, suggestions and learning: typing a password
+  straight into the terminal goes through the keyboard's predictive text, which
+  can change or add characters and draws what you type at the cursor even where
+  sudo hides it. The password is sent with Enter and isn't shown or saved.
 - **Select** shows the terminal's text as ordinary text, so long-press selection
   and the phone's Copy work; **Copy all** copies everything. On a computer, text
   you already highlighted with the mouse is copied straight away. In a tmux
