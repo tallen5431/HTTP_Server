@@ -23,7 +23,7 @@ A simple, self-configuring HTTP server manager that automatically detects your n
 
 ## Prerequisites
 
-- **Node.js** (v14 or later) and **npm** — [nodejs.org/en/download](https://nodejs.org/en/download),
+- **Node.js** (v18 or later) and **npm** — [nodejs.org/en/download](https://nodejs.org/en/download),
   or `sudo apt install nodejs npm` / `brew install node`
 - That's it. Everything else the manager needs, it sets up on first run.
 
@@ -662,7 +662,7 @@ The Open button only appears when a program has a valid URL. To see Open buttons
 - **`Permission denied`** — the executable bit was lost (common when the ZIP is
   unzipped by a GUI tool): `chmod +x start-manager.sh install-service.sh`, or run
   it as `bash start-manager.sh`.
-- **`Node.js is not installed`** — install Node v14+ from
+- **`Node.js is not installed`** — install Node v18+ from
   [nodejs.org](https://nodejs.org/en/download), then re-run the script.
 - **`npm install failed`** — usually no internet connection, or the folder isn't
   writable by your user. Fix that and re-run; the script retries the install

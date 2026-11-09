@@ -61,7 +61,7 @@ cd "$SCRIPT_DIR"
 
 # --- Preflight: Node -------------------------------------------------------
 # Required Node major, kept in sync with the "engines" field in package.json.
-REQUIRED_NODE_MAJOR=14
+REQUIRED_NODE_MAJOR=18
 
 if ! command -v node >/dev/null 2>&1; then
   cat >&2 <<EOF
