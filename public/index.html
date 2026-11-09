@@ -29,13 +29,13 @@
         <button class="btn btn-primary btn-sm" id="btnRestartAll" title="Restart all running programs">
           <span>↻</span> Restart All
         </button>
-        <button class="btn btn-info btn-sm" id="btnRediscover" title="Rediscover projects and regenerate config">
+        <button class="btn btn-info btn-sm header-more-item" id="btnRediscover" title="Rediscover projects and regenerate config">
           <span>🔍</span> Rediscover
         </button>
-        <button class="btn btn-warning btn-sm" id="btnRestartManager" title="Restart the HTTP Server Manager process">
+        <button class="btn btn-warning btn-sm header-more-item" id="btnRestartManager" title="Restart the HTTP Server Manager process">
           <span>⟳</span> Restart Manager
         </button>
-        <button class="btn btn-info btn-sm" id="btnImportRepo" title="Clone a program from a git repository into your projects folder">
+        <button class="btn btn-info btn-sm header-more-item" id="btnImportRepo" title="Clone a program from a git repository into your projects folder">
           <span>📥</span> Import from Git
         </button>
         <button class="btn btn-success btn-sm" id="btnAddProgram" title="Add a new program">
@@ -44,23 +44,26 @@
         <button class="btn btn-secondary btn-sm" id="btnDevices" title="Devices on your tailnet; open an SSH terminal to one">
           <span>&gt;_</span> Devices
         </button>
+        <!-- Phones only: the less-used actions above fold away behind this. -->
+        <button class="btn btn-light btn-sm header-more-toggle" id="btnMoreActions" aria-expanded="false"
+          title="Rediscover, Restart Manager, Import from Git">⋯ More</button>
       </div>
     </header>
 
     <div class="toolbar">
       <div class="stats-bar">
-        <div class="stat-item">
+        <button type="button" class="stat-item active" data-filter="all" title="Show all programs">
           <span class="stat-label">Total:</span>
           <span class="stat-value" id="statTotal">0</span>
-        </div>
-        <div class="stat-item stat-success">
+        </button>
+        <button type="button" class="stat-item stat-success" data-filter="running" title="Show only running programs">
           <span class="stat-label">Running:</span>
           <span class="stat-value" id="statRunning">0</span>
-        </div>
-        <div class="stat-item stat-danger">
+        </button>
+        <button type="button" class="stat-item stat-danger" data-filter="stopped" title="Show only stopped programs">
           <span class="stat-label">Stopped:</span>
           <span class="stat-value" id="statStopped">0</span>
-        </div>
+        </button>
       </div>
       <div class="search-bar">
         <input type="text" id="searchInput" placeholder="Search programs... (Ctrl+F)" class="search-input">
@@ -104,7 +107,7 @@
           <span class="label">URL:</span>
           <span class="value program-urls"></span>
         </div>
-        <div class="info-row">
+        <div class="info-row program-pid-row">
           <span class="label">PID:</span>
           <span class="value program-pid"></span>
         </div>
@@ -141,12 +144,14 @@
         <button class="btn btn-secondary btn-logs" title="View Logs">
           <span>📄</span> Logs
         </button>
-        <button class="btn btn-secondary btn-edit" title="Edit Program">
-          <span>✏️</span> Edit
-        </button>
-        <button class="btn btn-danger btn-delete" title="Delete Program">
-          <span>🗑️</span> Delete
-        </button>
+        <!-- Edit and Delete live behind ⋯ so Delete isn't one stray tap away. -->
+        <div class="card-menu-wrap">
+          <button class="btn btn-secondary btn-more" title="More actions" aria-haspopup="true" aria-expanded="false">⋯</button>
+          <div class="card-menu hidden" role="menu">
+            <button class="card-menu-item btn-edit" role="menuitem"><span>✏️</span> Edit</button>
+            <button class="card-menu-item card-menu-danger btn-delete" role="menuitem"><span>🗑️</span> Delete…</button>
+          </div>
+        </div>
       </div>
       <div class="program-logs hidden">
         <div class="logs-header">
