@@ -2207,6 +2207,12 @@ main {
   flex-direction: column;
 }
 
+/* Declared after the generic .hidden, so filtered-out cards need their own
+   rule or search and the stat filters would leave them showing. */
+.program-card.hidden {
+  display: none;
+}
+
 .program-card .program-info {
   flex: 1;
 }
