@@ -6,6 +6,7 @@ let reconnectTimeout = null;
 let intentionalClose = false;
 let currentPrograms = [];
 let searchQuery = '';
+let statusFilter = 'all'; // 'all' | 'running' | 'stopped', set by tapping the stats
 
 // Close the active socket without triggering the auto-reconnect path.
 function closeWsIntentionally() {
@@ -492,11 +493,12 @@ function filterPrograms() {
     if (!program) return;
 
     const searchLower = searchQuery.toLowerCase();
-    const matches = !searchQuery ||
+    const matchesSearch = !searchQuery ||
       program.name.toLowerCase().includes(searchLower) ||
       program.id.toLowerCase().includes(searchLower) ||
       (program.path && program.path.toLowerCase().includes(searchLower)) ||
       (program.url && program.url.toLowerCase().includes(searchLower));
+    const matches = matchesSearch && (statusFilter === 'all' || program.status === statusFilter);
 
     if (matches) {
       card.classList.remove('hidden');
@@ -507,13 +509,21 @@ function filterPrograms() {
   });
 
   // Show/hide grid and no results message
-  if (visibleCount === 0 && searchQuery) {
+  if (visibleCount === 0 && (searchQuery || statusFilter !== 'all')) {
     programsGrid.classList.add('hidden');
     noResults.classList.remove('hidden');
   } else {
     programsGrid.classList.remove('hidden');
     noResults.classList.add('hidden');
   }
+}
+
+function setStatusFilter(filter) {
+  statusFilter = filter;
+  document.querySelectorAll('.stats-bar .stat-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.filter === filter);
+  });
+  filterPrograms();
 }
 
 // Update stats display
@@ -581,7 +591,19 @@ function createProgramCard(program) {
 
   // Add click handler for Delete button
   btnDelete.addEventListener('click', () => {
+    closeCardMenus();
     deleteProgram(program.id, program.name);
+  });
+  btnEdit.addEventListener('click', closeCardMenus);
+
+  const btnMore = card.querySelector('.btn-more');
+  const menu = card.querySelector('.card-menu');
+  btnMore.addEventListener('click', (e) => {
+    e.stopPropagation(); // the document listener would close it again
+    const open = menu.classList.contains('hidden');
+    closeCardMenus();
+    menu.classList.toggle('hidden', !open);
+    btnMore.setAttribute('aria-expanded', String(open));
   });
 
   // Add log search functionality
@@ -640,6 +662,7 @@ function updateProgramCard(card, program) {
   card.querySelector('.program-path').textContent = program.path || '';
   card.querySelector('.program-path-row').classList.toggle('hidden', !program.path);
   card.querySelector('.program-pid').textContent = program.pid || 'N/A';
+  card.querySelector('.program-pid-row').classList.toggle('hidden', !program.pid);
 
   // Handle uptime display
   const uptimeRow = card.querySelector('.program-uptime-row');
@@ -687,6 +710,7 @@ function updateProgramCard(card, program) {
       link.rel = 'noopener noreferrer';
       link.className = 'program-url';
       link.textContent = entry.url;
+      link.title = entry.url; // long URLs are cut off with "…"; hover shows it all
       item.appendChild(link);
 
       urlContainer.appendChild(item);
@@ -725,15 +749,19 @@ function updateProgramCard(card, program) {
   const btnStop = card.querySelector('.btn-stop');
   const btnRestart = card.querySelector('.btn-restart');
 
-  if (program.status === 'running') {
-    btnStart.disabled = true;
-    btnStop.disabled = false;
-    btnRestart.disabled = false;
-  } else {
-    btnStart.disabled = false;
-    btnStop.disabled = true;
-    btnRestart.disabled = true;
-  }
+  // Only the buttons that apply: Start when stopped, Stop/Restart when running.
+  const running = program.status === 'running';
+  btnStart.classList.toggle('hidden', running);
+  btnStop.classList.toggle('hidden', !running);
+  btnRestart.classList.toggle('hidden', !running);
+  btnStart.disabled = running;
+  btnStop.disabled = !running;
+  btnRestart.disabled = !running;
+}
+
+function closeCardMenus() {
+  document.querySelectorAll('.card-menu').forEach(m => m.classList.add('hidden'));
+  document.querySelectorAll('.btn-more').forEach(b => b.setAttribute('aria-expanded', 'false'));
 }
 
 // Show loading state on button
@@ -1462,6 +1490,24 @@ document.addEventListener('DOMContentLoaded', () => {
   if (loginForm) loginForm.addEventListener('submit', submitLogin);
   const btnLogout = document.getElementById('btnLogout');
   if (btnLogout) btnLogout.addEventListener('click', logout);
+
+  // Card ⋯ menus close on any outside tap.
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.card-menu-wrap')) closeCardMenus();
+  });
+
+  // Phones: fold the less-used header actions behind "⋯ More".
+  const btnMoreActions = document.getElementById('btnMoreActions');
+  btnMoreActions.addEventListener('click', () => {
+    const open = document.getElementById('bulkActions').classList.toggle('show-more');
+    btnMoreActions.setAttribute('aria-expanded', String(open));
+    btnMoreActions.textContent = open ? '× Less' : '⋯ More';
+  });
+
+  // Tapping a stat filters the list to it.
+  document.querySelectorAll('.stats-bar .stat-item').forEach(el => {
+    el.addEventListener('click', () => setStatusFilter(el.dataset.filter));
+  });
 
   // Setup bulk action buttons
   document.getElementById('btnStartAll').addEventListener('click', startAll);

@@ -1989,3 +1989,230 @@ main {
   background: #2b4f75;
   color: #e6f0ff;
 }
+
+/* Password prompt hint and private password entry, along the bottom of the
+   terminal so the prompt itself stays visible above. */
+.terminal-prompt-hint,
+.terminal-password {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  background: #2b3a4a;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.terminal-prompt-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  color: #cfe3ff;
+  font-size: 0.9rem;
+}
+
+.terminal-prompt-hint.hidden,
+.terminal-password.hidden {
+  display: none;
+}
+
+.terminal-password-row {
+  display: flex;
+  gap: 6px;
+  padding: 8px 8px 0;
+}
+
+.terminal-password-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  background: #111;
+  color: #eee;
+  border: 1px solid #555;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 16px; /* below 16px iOS zooms the page on focus */
+}
+
+.terminal-password .terminal-overlay-actions {
+  background: transparent;
+}
+
+/* ---------------------------------------------------------------------------
+   Layout refinements: contextual card actions, ⋯ menus, stat filters
+   --------------------------------------------------------------------------- */
+
+/* Stats double as filters. */
+.stats-bar .stat-item {
+  background: none;
+  border: none;
+  font: inherit;
+  padding: 4px 8px;
+  margin: -4px -8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.stats-bar .stat-item:hover {
+  background: #f3f4f8;
+}
+
+.stats-bar .stat-item.active {
+  background: #eef0ff;
+  box-shadow: inset 0 0 0 1px #cfd8ff;
+}
+
+/* Info rows: room for the labels, and one line per URL everywhere. */
+.info-row {
+  gap: 8px;
+}
+
+.info-row .label {
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.info-row .value {
+  min-width: 0;
+  flex: 1;
+}
+
+.program-url-item {
+  flex-wrap: nowrap;
+}
+
+.program-url {
+  word-break: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Card actions: one row of the buttons that apply, plus ⋯ for Edit/Delete. */
+.program-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.program-actions > .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.program-actions > .btn.hidden {
+  display: none;
+}
+
+.card-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+}
+
+.btn-more {
+  min-width: 44px;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.card-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 160px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.2);
+  padding: 6px 0;
+  z-index: 20;
+}
+
+.card-menu.hidden {
+  display: none;
+}
+
+.card-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 0.95rem;
+  color: #333;
+  text-align: left;
+  cursor: pointer;
+}
+
+.card-menu-item:hover {
+  background: #f3f4f8;
+}
+
+.card-menu-danger {
+  color: #c62828;
+}
+
+/* Header: "⋯ More" exists for phones only. */
+.btn-light {
+  background: #eceff1;
+  color: #37474f;
+}
+
+.btn-light:hover:not(:disabled) {
+  background: #cfd8dc;
+}
+
+.header-more-toggle {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .header-more-toggle {
+    display: flex;
+  }
+
+  .bulk-actions .header-more-item {
+    display: none;
+  }
+
+  .bulk-actions.show-more .header-more-item {
+    display: flex;
+  }
+
+  .program-actions {
+    gap: 6px;
+  }
+
+  .program-actions > .btn {
+    padding: 10px 4px;
+    gap: 4px;
+  }
+
+  .stats-bar .stat-item {
+    padding: 4px 6px;
+    margin: -4px -6px;
+  }
+}
+
+/* Cards in a row share a height; keep each card's buttons on its bottom edge. */
+.program-card {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Declared after the generic .hidden, so filtered-out cards need their own
+   rule or search and the stat filters would leave them showing. */
+.program-card.hidden {
+  display: none;
+}
+
+.program-card .program-info {
+  flex: 1;
+}

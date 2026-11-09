@@ -477,6 +477,7 @@ function renderQuickEditor(device, editor, onChange) {
 // mode (vim and less switch it), and Ctrl/Alt latch until the next typed key.
 // ---------------------------------------------------------------------------
 const EXTRA_KEYS = [
+  { label: '🔑', action: () => openPasswordEntry(), className: 'terminal-key-action', title: 'Type a password privately' },
   { label: 'Select', action: () => openSelectMode(), className: 'terminal-key-action' },
   { label: 'Paste', action: () => pasteIntoTerminal(), className: 'terminal-key-action' },
   { label: 'Esc', send: '\x1b' },
@@ -542,6 +543,7 @@ function renderExtraKeys() {
     btn.tabIndex = -1;
     if (key.modifier) btn.dataset.modifier = key.modifier;
     if (key.className) btn.classList.add(key.className);
+    if (key.title) btn.title = key.title;
 
     // Clipboard access needs a "user activation", which a touch pointerdown
     // isn't (the tap only counts once the finger lifts), so these use click.
@@ -659,6 +661,7 @@ function openSelectMode() {
 function closeOverlays() {
   document.getElementById('terminalSelect').classList.add('hidden');
   document.getElementById('terminalPaste').classList.add('hidden');
+  closePasswordEntry();
   window.getSelection().removeAllRanges();
   if (terminalState) terminalState.term.focus();
 }
@@ -686,6 +689,59 @@ async function pasteIntoTerminal() {
   input.value = '';
   document.getElementById('terminalPaste').classList.remove('hidden');
   input.focus();
+}
+
+// ---------------------------------------------------------------------------
+// Passwords. Typing into the terminal goes through the phone keyboard's
+// prediction, which can change or add characters and draws what you type at
+// the cursor (even where sudo hides it). A password field gets no prediction,
+// suggestions or learning, so passwords go through one instead.
+// ---------------------------------------------------------------------------
+
+// The cursor line looks like a password prompt: "[sudo] password for tj: ",
+// "tj@host's password: ", "Enter passphrase for key '...': ", "Password: ".
+const PASSWORD_PROMPT = /(password|passphrase|passcode|\bpin\b)[^\n]{0,60}:\s*$/i;
+
+function cursorLineText(term) {
+  const buffer = term.buffer.active;
+  const line = buffer.getLine(buffer.baseY + buffer.cursorY);
+  return line ? line.translateToString(true) : '';
+}
+
+function updatePasswordHint() {
+  const s = terminalState;
+  const hint = document.getElementById('terminalPasswordHint');
+  const entryOpen = !document.getElementById('terminalPassword').classList.contains('hidden');
+  const prompting = Boolean(s) && PASSWORD_PROMPT.test(cursorLineText(s.term));
+  hint.classList.toggle('hidden', !prompting || entryOpen);
+}
+
+function openPasswordEntry() {
+  if (!terminalState) return;
+  const input = document.getElementById('terminalPasswordInput');
+  input.value = '';
+  input.type = 'password';
+  document.getElementById('terminalPasswordHint').classList.add('hidden');
+  document.getElementById('terminalPassword').classList.remove('hidden');
+  input.focus();
+}
+
+function closePasswordEntry() {
+  const input = document.getElementById('terminalPasswordInput');
+  input.value = '';
+  input.type = 'password';
+  document.getElementById('terminalPassword').classList.add('hidden');
+}
+
+function sendPassword() {
+  const input = document.getElementById('terminalPasswordInput');
+  const value = input.value;
+  closePasswordEntry();
+  // Raw keystrokes, not term.paste(): a bracketed paste would leave the
+  // password sitting at a shell prompt instead of answering sudo.
+  sendInput(value + '\r');
+  if (terminalState) terminalState.term.focus();
+  updatePasswordHint();
 }
 
 function setExtraKeysVisible(visible) {
@@ -791,6 +847,8 @@ async function openTerminal(target) {
   term.focus();
 
   term.onData((data) => sendInput(applyModifiers(data)));
+  term.onWriteParsed(updatePasswordHint);
+  term.onCursorMove(updatePasswordHint);
   term.onResize(({ rows, cols }) => {
     if (state.socket && state.socket.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'resize', rows, cols }));
@@ -890,6 +948,8 @@ function closeTerminal() {
   terminalModal.classList.add('hidden');
   document.getElementById('terminalSelect').classList.add('hidden');
   document.getElementById('terminalPaste').classList.add('hidden');
+  closePasswordEntry();
+  document.getElementById('terminalPasswordHint').classList.add('hidden');
   resetViewportFit();
 }
 
@@ -919,6 +979,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('terminalCopyAll').addEventListener('click', () => copyText(terminalText()));
   document.getElementById('terminalSelectDone').addEventListener('click', closeOverlays);
+  document.getElementById('terminalPasswordHintOpen').addEventListener('click', openPasswordEntry);
+  document.getElementById('terminalPasswordSend').addEventListener('click', sendPassword);
+  document.getElementById('terminalPasswordCancel').addEventListener('click', () => {
+    closePasswordEntry();
+    if (terminalState) terminalState.term.focus();
+    updatePasswordHint();
+  });
+  document.getElementById('terminalPasswordShow').addEventListener('click', () => {
+    const input = document.getElementById('terminalPasswordInput');
+    input.type = input.type === 'password' ? 'text' : 'password';
+    input.focus();
+  });
+  document.getElementById('terminalPasswordInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); sendPassword(); }
+    // Keep Escape etc. away from the dashboard's global shortcuts.
+    e.stopPropagation();
+  });
   document.getElementById('terminalPasteCancel').addEventListener('click', closeOverlays);
   document.getElementById('terminalPasteSend').addEventListener('click', () => {
     const text = document.getElementById('terminalPasteInput').value;

@@ -23,7 +23,7 @@ A simple, self-configuring HTTP server manager that automatically detects your n
 
 ## Prerequisites
 
-- **Node.js** (v14 or later) and **npm** — [nodejs.org/en/download](https://nodejs.org/en/download),
+- **Node.js** (v18 or later) and **npm** — [nodejs.org/en/download](https://nodejs.org/en/download),
   or `sudo apt install nodejs npm` / `brew install node`
 - That's it. Everything else the manager needs, it sets up on first run.
 
@@ -236,6 +236,13 @@ On a phone:
   arrows, Home/End, PgUp/PgDn and a few symbols. Ctrl and Alt latch for the next
   key you type: tap **Ctrl**, then `c` sends Ctrl+C. Arrows repeat while held.
   **⌨** shows or hides the row (shown by default on touch screens).
+- **Passwords:** when the terminal asks for a password (sudo, ssh, a key
+  passphrase), a **Type password** button appears; **🔑** in the extra-keys row
+  opens the same field any time. It's a real password field, so the phone
+  keyboard turns off prediction, suggestions and learning: typing a password
+  straight into the terminal goes through the keyboard's predictive text, which
+  can change or add characters and draws what you type at the cursor even where
+  sudo hides it. The password is sent with Enter and isn't shown or saved.
 - **Select** shows the terminal's text as ordinary text, so long-press selection
   and the phone's Copy work; **Copy all** copies everything. On a computer, text
   you already highlighted with the mouse is copied straight away. In a tmux
@@ -655,7 +662,7 @@ The Open button only appears when a program has a valid URL. To see Open buttons
 - **`Permission denied`** — the executable bit was lost (common when the ZIP is
   unzipped by a GUI tool): `chmod +x start-manager.sh install-service.sh`, or run
   it as `bash start-manager.sh`.
-- **`Node.js is not installed`** — install Node v14+ from
+- **`Node.js is not installed`** — install Node v18+ from
   [nodejs.org](https://nodejs.org/en/download), then re-run the script.
 - **`npm install failed`** — usually no internet connection, or the folder isn't
   writable by your user. Fix that and re-run; the script retries the install
